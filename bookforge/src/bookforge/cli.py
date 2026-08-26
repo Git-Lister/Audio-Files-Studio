@@ -1,4 +1,4 @@
-"""BookForge CLI entrypoint."""
+"""Audio-Files Studio CLI entrypoint."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .process.cleaner import clean_text
 from .project import BookProject
 from .tts.factory import get_backend
 
-app = typer.Typer(help="Convert texts/epubs into audiobooks using local TTS.")
+app = typer.Typer(help="Audio-Files Studio: convert texts/epubs into audiobooks using local TTS.")
 
 
 def _rebuild_audio_from_index(
@@ -225,9 +225,7 @@ def process(
                 all_chunk_meta.append(chunk.to_dict())
 
         project.save_index(all_chunk_meta)
-        typer.echo(
-            f"Saved project index with {len(all_chunk_meta)} chunks to {project.index_path}"
-        )
+        typer.echo(f"Saved project index with {len(all_chunk_meta)} chunks to {project.index_path}")
 
         project.save_meta(
             {
@@ -296,8 +294,7 @@ def review(
     source_file_str = meta.get("source_file")
     if not source_file_str:
         raise typer.BadParameter(
-            f"No source_file recorded in {project.meta_path}; "
-            "re-run process to create meta.json."
+            f"No source_file recorded in {project.meta_path}; re-run process to create meta.json."
         )
 
     source_file = Path(source_file_str)
@@ -322,9 +319,7 @@ def review(
     )
 
     if chapter_idx >= len(book.chapters):
-        raise typer.BadParameter(
-            f"Chapter index {chapter_idx} out of range for source text."
-        )
+        raise typer.BadParameter(f"Chapter index {chapter_idx} out of range for source text.")
 
     from .process.chunker import chunk_chapter as re_chunk_chapter
 

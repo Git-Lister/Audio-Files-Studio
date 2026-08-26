@@ -1,6 +1,6 @@
 services:
   studio:
-    image: bookforge-xtts
+    image: audio-files-studio
     build: .
     ports:
       - "8501:8501"
