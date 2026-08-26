@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any, Optional
 
 from nicegui import app, ui
 
@@ -29,11 +28,11 @@ APP_TITLE = "🎙️ Audio‑Files Studio"
 # ---------------------------------------------------------------------------
 # Shared state (survives page reloads)
 # ---------------------------------------------------------------------------
-def get_processor() -> Optional[IncrementalProcessor]:
+def get_processor() -> IncrementalProcessor | None:
     return app.storage.general.get("processor")
 
 
-def set_processor(p: Optional[IncrementalProcessor]):
+def set_processor(p: IncrementalProcessor | None) -> None:
     app.storage.general["processor"] = p
 
 
@@ -51,7 +50,7 @@ def get_progress_dict() -> dict:
     )
 
 
-def set_progress_dict(d: dict):
+def set_progress_dict(d: dict) -> None:
     app.storage.general["progress"] = d
 
 
@@ -150,7 +149,6 @@ async def extract_upload_bytes(e) -> tuple[bytes, str]:
 @ui.page("/")
 async def main_page():
     # ── Local state ──
-    processor = None
     book_event = None
     speaker_event = None
 
@@ -175,7 +173,7 @@ async def main_page():
             ui.notify(msg, type=type, timeout=5)
 
     # ── Views ──
-    with ui.column().classes("w-full") as main_container:
+    with ui.column().classes("w-full"):
         # HOME
         with ui.column().classes("w-full") as home_card:
             with ui.card().classes("w-full q-pa-xl text-center"):
@@ -207,11 +205,10 @@ async def main_page():
                 ui.label("1. Setup").classes("text-h5 q-mb-md")
 
                 existing_projects = list_projects()
-                clone_select = None
                 if existing_projects:
                     with ui.row().classes("items-center gap-2 q-mb-md"):
                         ui.label("Clone settings from").classes("text-caption")
-                        clone_select = ui.select(
+                        ui.select(
                             options=[""] + existing_projects,
                             value="",
                             on_change=lambda e: clone_settings(e.value),
@@ -272,7 +269,7 @@ async def main_page():
                             "XTTS offers high‑quality voice cloning; Piper is fast CPU‑based"
                         )
                         voice_container = ui.column().classes("w-full")
-                        voice_model_select: Optional[ui.select] = None
+                        voice_model_select: ui.select | None = None
 
                         # Speaker WAV label (shows chosen filename)
                         speaker_label = ui.label("No speaker file selected").classes(
@@ -364,13 +361,13 @@ async def main_page():
                 setup_spinner.visible = True
                 save_btn.disable()
                 errors = []
-                book_path: Optional[Path] = None
+                book_path: Path | None = None
                 if book_event is not None:
                     try:
                         book_bytes, book_filename = await extract_upload_bytes(book_event)
                         book_path = TMP_DIR / book_filename
                         book_path.write_bytes(book_bytes)
-                    except Exception as e:
+                    except (AttributeError, OSError) as e:
                         errors.append(f"Failed to read uploaded book: {e}")
                 elif book_select.value:
                     book_path = BOOKS_DIR / book_select.value
@@ -379,8 +376,8 @@ async def main_page():
                 if not output_name.value.strip():
                     errors.append("Output project name is required.")
                 backend = backend_radio.value
-                voice_model: Optional[Path] = None
-                speaker_wav: Optional[Path] = None
+                voice_model: Path | None = None
+                speaker_wav: Path | None = None
                 if backend == "piper":
                     if not voice_model_select or not voice_model_select.value:
                         errors.append("Piper voice model is required.")
@@ -398,7 +395,7 @@ async def main_page():
                             )
                             speaker_wav = TMP_DIR / speaker_filename
                             speaker_wav.write_bytes(speaker_bytes)
-                        except Exception as e:
+                        except (AttributeError, OSError) as e:
                             errors.append(f"Failed to read speaker WAV: {e}")
                 if errors:
                     for err in errors:
@@ -406,6 +403,8 @@ async def main_page():
                     setup_spinner.visible = False
                     save_btn.enable()
                     return
+                # Narrow type: book_path is guaranteed non-None here
+                assert book_path is not None
                 try:
                     tts_backend = await run_in_thread(
                         get_backend,
@@ -429,7 +428,7 @@ async def main_page():
                     set_processor(proc)
                     safe_notify("Configuration saved!", type="positive")
                     show_pipeline_step("prepare")
-                except Exception as e:
+                except (OSError, ValueError, RuntimeError) as e:
                     safe_notify(f"Failed to create processor: {e}", type="negative")
                 finally:
                     setup_spinner.visible = False
@@ -457,7 +456,7 @@ async def main_page():
                         prepare_status.set_text(f"✅ {progress.total_chapters} chapters found.")
                         safe_notify("Book prepared!", type="positive")
                         show_pipeline_step("synthesize")
-                    except Exception as e:
+                    except (OSError, RuntimeError) as e:
                         safe_notify(f"Preparation failed: {e}", type="negative")
                     finally:
                         prepare_btn.enable()
@@ -465,7 +464,7 @@ async def main_page():
 
                 prepare_btn.on_click(lambda: on_prepare())
 
-            # Synthesize (unchanged except minor bindings already present)
+            # Synthesize
             with ui.column().classes("w-full") as synth_card:
                 ui.label("3. Synthesize").classes("text-h5 q-mb-md")
                 prog = get_progress_dict()
@@ -550,7 +549,7 @@ async def main_page():
                             if one:
                                 break
                             await asyncio.sleep(0.1)
-                    except Exception as e:
+                    except (OSError, RuntimeError) as e:
                         safe_notify(f"Chapter error: {e}", type="negative")
                     finally:
                         set_progress_dict({**get_progress_dict(), "active": False})
@@ -587,7 +586,7 @@ async def main_page():
                             finalize_status.set_text("✅ Audiobook ready!")
                             safe_notify("Book finalized!", type="positive")
                             show_view("projects")
-                    except Exception as e:
+                    except (OSError, RuntimeError) as e:
                         safe_notify(f"Finalization error: {e}", type="negative")
                     finally:
                         finalize_btn.enable()
@@ -667,7 +666,7 @@ async def main_page():
                 elif proc.book_text and proc.chapter_progress:
                     show_pipeline_step("synthesize")
                 else:
-                    show_pipeline_step("prepare")
+                    show_pipeline_step("setup")
             else:
                 show_pipeline_step("setup")
 
@@ -703,7 +702,7 @@ async def main_page():
         try:
             with progress_file.open("r") as f:
                 data = json.load(f)
-        except Exception as e:
+        except (json.JSONDecodeError, OSError) as e:
             safe_notify(f"Failed to read progress file: {e}", type="negative")
             return
 
@@ -731,7 +730,7 @@ async def main_page():
                 voice_model=voice_model,
                 speaker_wav=speaker_wav,
             )
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError) as e:
             safe_notify(f"Failed to recreate TTS backend: {e}", type="negative")
             return
 
@@ -754,7 +753,7 @@ async def main_page():
             if not loaded:
                 safe_notify("No previous progress could be loaded.", type="warning")
                 return
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError) as e:
             safe_notify(f"Failed to resume: {e}", type="negative")
             return
 

@@ -60,7 +60,7 @@ Open **http://localhost:8501** and follow the on‑screen wizard.
 ```bash
 cd bookforge
 python -m venv .venv
-source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+.venv\Scripts\activate
 pip install -e ".[dev,piper,ui]"
 python src/bookforge/ui_nicegui.py
 ```

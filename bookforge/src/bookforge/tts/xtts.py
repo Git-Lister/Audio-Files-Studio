@@ -2,25 +2,37 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
-import tempfile
-from typing import Optional, List
+from pathlib import Path
 
 import torch
+
+# ---------------------------------------------------------------------------
+# PyTorch 2.6+ compatibility: Coqui TTS checkpoints need weights_only=False
+# ---------------------------------------------------------------------------
+_original_torch_load = torch.load
+
+
+def _torch_load_allow_weights(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _original_torch_load(*args, **kwargs)
+
+
+torch.load = _torch_load_allow_weights
+# ---------------------------------------------------------------------------
+
 from TTS.api import TTS  # coqui-tts
 
+from ..audio.concat import concat_wavs
 from ..config import PresetConfig
 from ..process.chunker import Chunk
 from ..process.sanitize import sanitise_for_tts
-from ..audio.concat import concat_wavs
 from .backend import TTSBackend
 
 
-def _split_safe(text: str, max_chars: int = 250) -> List[str]:
+def _split_safe(text: str, max_chars: int = 250) -> list[str]:
     """Split text into segments ≤ max_chars, trying to break at sentence boundaries."""
-    # First split by sentence-ending punctuation followed by space
-    sentences = re.split(r'(?<=[.!?])\s+', text)
+    sentences = re.split(r"(?<=[.!?])\s+", text)
     segments = []
     for s in sentences:
         s = s.strip()
@@ -29,13 +41,11 @@ def _split_safe(text: str, max_chars: int = 250) -> List[str]:
         if len(s) <= max_chars:
             segments.append(s)
         else:
-            # Further split by clause markers or chunk evenly
-            sub_parts = re.split(r'(?<=[,;:])\s+', s)
+            sub_parts = re.split(r"(?<=[,;:])\s+", s)
             for part in sub_parts:
                 if len(part) <= max_chars:
                     segments.append(part)
                 else:
-                    # Cut by word boundaries into max_chars pieces
                     words = part.split()
                     current = ""
                     for w in words:
@@ -57,7 +67,7 @@ class XTTSBackend(TTSBackend):
         self,
         model_name: str = "tts_models/multilingual/multi-dataset/xtts_v2",
         gpu: bool = True,
-        speaker_wav: Optional[Path] = None,
+        speaker_wav: Path | None = None,
         language: str = "en",
     ) -> None:
         device = "cuda" if gpu and torch.cuda.is_available() else "cpu"
@@ -81,19 +91,16 @@ class XTTSBackend(TTSBackend):
 
         safe_text = sanitise_for_tts(chunk.text)
 
-        # If text is short enough, synthesise directly
         if len(safe_text) <= 250:
             self._synthesise_directly(safe_text, out_path)
             return
 
-        # Otherwise split into safe segments
         segments = _split_safe(safe_text, max_chars=250)
         if len(segments) == 1:
             self._synthesise_directly(segments[0], out_path)
             return
 
-        # Synthesise each segment to a temp file, then concatenate
-        temp_files: List[Path] = []
+        temp_files: list[Path] = []
         try:
             for i, seg in enumerate(segments):
                 tmp = out_path.with_name(f"{out_path.stem}_part_{i:04d}.wav")
@@ -101,11 +108,10 @@ class XTTSBackend(TTSBackend):
                 self._synthesise_directly(seg, tmp)
             concat_wavs(temp_files, out_path)
         finally:
-            # Clean up temp files
             for tmp in temp_files:
                 try:
                     tmp.unlink()
-                except Exception:
+                except OSError:
                     pass
 
     def _synthesise_directly(self, text: str, file_path: Path) -> None:

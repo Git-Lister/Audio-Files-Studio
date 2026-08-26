@@ -8,7 +8,8 @@ services:
       - .:/app
       - C:\bookforge\models:/models
     environment:
-      - COQUI_TTS_AGREED=1      # ← add this line
+      - COQUI_TOS_AGREED=1
+      - TTS_HOME=/models
     deploy:
       resources:
         reservations:
