@@ -7,6 +7,8 @@ services:
     volumes:
       - .:/app
       - C:\bookforge\models:/models
+    environment:
+      - COQUI_TTS_AGREED=1      # ← add this line
     deploy:
       resources:
         reservations:
