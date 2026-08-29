@@ -14,7 +14,7 @@ subscriptions, full control.
 - **Smart chapter detection** – auto, markdown, structured, and heuristic strategies
 - **Incremental processing** – chapter‑by‑chapter synthesis with live progress
 - **Audio normalisation** – EBU R128 loudness standardisation
-- **Docker‑based** – reproducible CUDA environment for Windows, Linux, and Mac
+- **Docker‑based** – reproducible CUDA environment for ku 3, Linux, and Mac
 
 ## 🚀 Quick Start (Docker)
 
