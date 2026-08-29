@@ -2,6 +2,8 @@
 Finalize view – concatenate final audio and export.
 """
 
+from __future__ import annotations
+
 import asyncio
 
 from nicegui import ui
@@ -39,5 +41,5 @@ def view():
 
         finalize_btn.on_click(lambda: on_finalize())
 
-    container.switch_to_projects = None  # set by main
+    container.switch_to_projects = None
     return container

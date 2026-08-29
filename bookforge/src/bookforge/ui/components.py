@@ -5,6 +5,7 @@ Reusable UI components and shared state helpers.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from nicegui import app, ui
@@ -14,10 +15,12 @@ from nicegui import app, ui
 # ---------------------------------------------------------------------------
 _notification_container = None
 
+
 def init_notification_area():
     global _notification_container
     with ui.column().classes("w-full") as _notification_container:
         pass
+
 
 def safe_notify(msg: str, type: str = "positive"):
     if _notification_container is None:
@@ -26,30 +29,108 @@ def safe_notify(msg: str, type: str = "positive"):
         with _notification_container:
             ui.notify(msg, type=type, timeout=5)
 
-# ---------------------------------------------------------------------------
-# Processor state (shared across page reloads)
-# ---------------------------------------------------------------------------
-def get_processor() -> Any | None:
-    return app.storage.general.get("processor")
 
-def set_processor(p: Any | None):
-    app.storage.general["processor"] = p
+# ---------------------------------------------------------------------------
+# Processor state (persisted as JSON‑safe dict, not the object)
+# ---------------------------------------------------------------------------
+_processor_cache = None
+
+
+def get_processor():
+    """Return the active processor, reconstructing it from saved state if needed."""
+    global _processor_cache
+    if _processor_cache is not None:
+        return _processor_cache
+
+    state = app.storage.general.get("processor_state")
+    if not state:
+        return None
+
+    # Reconstruct from persisted state
+    from bookforge.incremental_processor import IncrementalProcessor
+    from bookforge.tts.factory import get_backend
+
+    backend_type = state.get("backend_type", "piper")
+    voice_model = Path(state["voice_model"]) if state.get("voice_model") else None
+    speaker_wav = Path(state["speaker_wav"]) if state.get("speaker_wav") else None
+
+    try:
+        tts_backend = get_backend(
+            backend_type=backend_type,
+            voice_model=voice_model,
+            speaker_wav=speaker_wav,
+        )
+    except Exception:
+        # Backend may not be available (e.g., missing model) – return None
+        return None
+
+    try:
+        proc = IncrementalProcessor(
+            input_file=Path(state["input_file"]),
+            output_dir=Path(state["output_dir"]),
+            backend=tts_backend,
+            preset=state.get("preset", "calm_longform"),
+            chapter_strategy=state.get("chapter_strategy", "auto"),
+            chapter_min_confidence=float(state.get("chapter_min_confidence", 0.5)),
+            normalize=state.get("normalize", False),
+            target_lufs=float(state.get("target_lufs", -16.0)),
+            voice_model=voice_model,
+            speaker_wav=speaker_wav,
+        )
+        proc.backend_name = backend_type
+        # If there's saved progress, load it
+        if (proc.output_dir / "processing_progress.json").exists():
+            proc.prepare_text()
+            proc.load_progress()
+        _processor_cache = proc
+        return proc
+    except Exception:
+        return None
+
+
+def set_processor(p):
+    """Store the processor in cache and persist only serializable state."""
+    global _processor_cache
+    _processor_cache = p
+
+    if p is None:
+        app.storage.general["processor_state"] = None
+        return
+
+    app.storage.general["processor_state"] = {
+        "input_file": str(p.input_file),
+        "output_dir": str(p.output_dir),
+        "backend_type": getattr(p, "backend_name", "piper"),
+        "voice_model": str(p.voice_model) if p.voice_model else None,
+        "speaker_wav": str(p.speaker_wav) if p.speaker_wav else None,
+        "preset": p.preset,
+        "chapter_strategy": p.chapter_strategy,
+        "chapter_min_confidence": p.chapter_min_confidence,
+        "normalize": p.normalize,
+        "target_lufs": p.target_lufs,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Progress dictionary helpers
 # ---------------------------------------------------------------------------
 def get_progress_dict() -> dict:
-    return app.storage.general.get("progress", {
-        "overall_progress": 0.0,
-        "chapter_progress": 0.0,
-        "status_message": "Idle",
-        "estimated_time_remaining": "",
-        "chapter_statuses_html": "",
-        "active": False,
-    })
+    return app.storage.general.get(
+        "progress",
+        {
+            "overall_progress": 0.0,
+            "chapter_progress": 0.0,
+            "status_message": "Idle",
+            "estimated_time_remaining": "",
+            "chapter_statuses_html": "",
+            "active": False,
+        },
+    )
+
 
 def set_progress_dict(d: dict):
     app.storage.general["progress"] = d
+
 
 def update_progress_from_processor(proc):
     progress = proc.get_progress()
@@ -68,14 +149,17 @@ def update_progress_from_processor(proc):
         html_parts.append(
             f'<span style="padding:4px 8px; border:1px solid #ccc; border-radius:4px; font-size:0.85rem;">{status_text}</span>'
         )
-    html_parts.append('</div>')
-    set_progress_dict({
-        "overall_progress": progress.overall_progress,
-        "chapter_progress": progress.chapter_progress,
-        "status_message": f"{progress.status_message} (ETA: {progress.estimated_time_remaining})",
-        "estimated_time_remaining": progress.estimated_time_remaining,
-        "chapter_statuses_html": ''.join(html_parts),
-    })
+    html_parts.append("</div>")
+    set_progress_dict(
+        {
+            "overall_progress": progress.overall_progress,
+            "chapter_progress": progress.chapter_progress,
+            "status_message": f"{progress.status_message} (ETA: {progress.estimated_time_remaining})",
+            "estimated_time_remaining": progress.estimated_time_remaining,
+            "chapter_statuses_html": "".join(html_parts),
+        }
+    )
+
 
 # ---------------------------------------------------------------------------
 # Upload helper

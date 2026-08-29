@@ -20,6 +20,7 @@ from .tts.backend import TTSBackend
 
 class AbortException(Exception):
     """Raised when processing is aborted by the user."""
+
     pass
 
 
@@ -39,17 +40,17 @@ class ProcessingProgress:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            'stage': self.stage,
-            'current_chapter': self.current_chapter,
-            'total_chapters': self.total_chapters,
-            'current_chunk': self.current_chunk,
-            'total_chunks': self.total_chunks,
-            'chapter_progress': self.chapter_progress,
-            'overall_progress': self.overall_progress,
-            'estimated_time_remaining': self.estimated_time_remaining,
-            'status_message': self.status_message,
-            'start_time': self.start_time.isoformat(),
-            'elapsed_time': self.elapsed_time,
+            "stage": self.stage,
+            "current_chapter": self.current_chapter,
+            "total_chapters": self.total_chapters,
+            "current_chunk": self.current_chunk,
+            "total_chunks": self.total_chunks,
+            "chapter_progress": self.chapter_progress,
+            "overall_progress": self.overall_progress,
+            "estimated_time_remaining": self.estimated_time_remaining,
+            "status_message": self.status_message,
+            "start_time": self.start_time.isoformat(),
+            "elapsed_time": self.elapsed_time,
         }
 
 
@@ -99,16 +100,16 @@ class IncrementalProcessor:
         self.all_chunks: List[Chunk] = []
         self.start_time = datetime.now()
         self.stop_requested = False
-        self.graceful_stop_requested = False   # <-- add this line
+        self.graceful_stop_requested = False  # <-- add this line
 
         # Logging
-        self.logger = logging.getLogger('bookforge.processor')
+        self.logger = logging.getLogger("bookforge.processor")
         self.logger.setLevel(logging.DEBUG)
         log_file = output_dir / "processing.log"
         log_file.unlink(missing_ok=True)
-        fh = logging.FileHandler(log_file, encoding='utf-8')
+        fh = logging.FileHandler(log_file, encoding="utf-8")
         fh.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
         fh.setFormatter(formatter)
         self.logger.addHandler(fh)
         self.logger.info(f"Processor initialised for {input_file}")
@@ -121,7 +122,7 @@ class IncrementalProcessor:
     def abort(self):
         self.stop_requested = True
         self.logger.warning("Abort requested by user")
-        
+
     def request_graceful_stop(self):
         """Request processing to stop after the current chunk finishes."""
         self.graceful_stop_requested = True
@@ -157,12 +158,24 @@ class IncrementalProcessor:
                 return True
         return False
 
+    def retry_failed_chapters(self) -> None:
+        """Reset all chapters with errors so they can be processed again."""
+        self.logger.info("Retrying failed chapters...")
+        for cp in self.chapter_progress:
+            if cp.error_message:
+                cp.error_message = None
+                cp.processed_chunks = 0
+                cp.chapter_audio_created = False
+                cp.chunks = []  # force re-chunking
+        self._save_progress()
+        self.logger.info("Failed chapters reset for retry.")
+
     def finalize_book(self) -> None:
         if not self.is_complete():
             raise ValueError("Cannot finalize: processing not complete")
         self.logger.info("Finalizing book...")
         chapter_wavs = [
-            self.project.chapters_dir / f"chapter_{i+1:02d}.wav"
+            self.project.chapters_dir / f"chapter_{i + 1:02d}.wav"
             for i in range(len(self.chapter_progress))
         ]
         if chapter_wavs:
@@ -170,6 +183,7 @@ class IncrementalProcessor:
             concat_wavs(chapter_wavs, book_wav)
             if self.normalize:
                 from .audio.normalise import normalize_audio
+
                 normalized_wav = self.output_dir / "book_normalized.wav"
                 normalize_audio(book_wav, normalized_wav, target_lufs=self.target_lufs)
                 book_wav.unlink()
@@ -177,25 +191,27 @@ class IncrementalProcessor:
 
         chunk_dicts = [chunk.to_dict() for chunk in self.all_chunks]
         self.project.save_index(chunk_dicts)
-        self.project.save_meta({
-            "backend": self.backend_name,
-            "source_file": str(self.input_file.resolve()),
-            "preset": self.preset,
-            "chapter_strategy": self.chapter_strategy,
-            "chapter_min_confidence": self.chapter_min_confidence,
-            "normalize": self.normalize,
-            "target_lufs": self.target_lufs,
-            "version": "1.2.0",
-            "processing_completed": datetime.now().isoformat(),
-        })
+        self.project.save_meta(
+            {
+                "backend": self.backend_name,
+                "source_file": str(self.input_file.resolve()),
+                "preset": self.preset,
+                "chapter_strategy": self.chapter_strategy,
+                "chapter_min_confidence": self.chapter_min_confidence,
+                "normalize": self.normalize,
+                "target_lufs": self.target_lufs,
+                "chapter_titles": self.book_text.chapter_titles if self.book_text else [],
+                "version": "1.2.0",
+                "processing_completed": datetime.now().isoformat(),
+            }
+        )
         if self.progress_file.exists():
             self.progress_file.unlink()
         self.logger.info("Finalization complete")
 
     def is_complete(self) -> bool:
-        return (
-            self.book_text is not None and
-            all(cp.chapter_audio_created for cp in self.chapter_progress)
+        return self.book_text is not None and all(
+            cp.chapter_audio_created for cp in self.chapter_progress
         )
 
     # ------------------------------------------------------------------
@@ -204,10 +220,17 @@ class IncrementalProcessor:
     def get_progress(self) -> ProcessingProgress:
         if not self.book_text or not self.chapter_progress:
             return ProcessingProgress(
-                stage='preparing_text', current_chapter=0, total_chapters=0,
-                current_chunk=0, total_chunks=0, chapter_progress=0.0, overall_progress=0.0,
-                estimated_time_remaining='Unknown', status_message='Preparing text...',
-                start_time=self.start_time, elapsed_time=self._format_elapsed_time(),
+                stage="preparing_text",
+                current_chapter=0,
+                total_chapters=0,
+                current_chunk=0,
+                total_chunks=0,
+                chapter_progress=0.0,
+                overall_progress=0.0,
+                estimated_time_remaining="Unknown",
+                status_message="Preparing text...",
+                start_time=self.start_time,
+                elapsed_time=self._format_elapsed_time(),
             )
 
         total_chapters = len(self.chapter_progress)
@@ -224,7 +247,9 @@ class IncrementalProcessor:
         else:
             current_chapter_idx = total_chapters
 
-        chapter_progress = current_chunk_done / max(current_chunk_total, 1) if current_chunk_total else 1.0
+        chapter_progress = (
+            current_chunk_done / max(current_chunk_total, 1) if current_chunk_total else 1.0
+        )
         overall_progress = (completed_chapters + chapter_progress) / max(total_chapters, 1)
 
         elapsed = (datetime.now() - self.start_time).total_seconds()
@@ -233,17 +258,17 @@ class IncrementalProcessor:
             remaining = total_est - elapsed
             eta = self._format_time_remaining(remaining)
         else:
-            eta = 'Calculating...'
+            eta = "Calculating..."
 
         if current_chapter_idx >= total_chapters:
-            status = 'All chapters processed'
+            status = "All chapters processed"
         elif current_chunk_total == 0:
-            status = f'Preparing chapter {current_chapter_idx+1}/{total_chapters}'
+            status = f"Preparing chapter {current_chapter_idx + 1}/{total_chapters}"
         else:
-            status = f'Synthesizing chunk {current_chunk_done+1}/{current_chunk_total} in Chapter {current_chapter_idx+1}'
+            status = f"Synthesizing chunk {current_chunk_done + 1}/{current_chunk_total} in Chapter {current_chapter_idx + 1}"
 
         return ProcessingProgress(
-            stage='processing_chapters',
+            stage="processing_chapters",
             current_chapter=current_chapter_idx + 1,
             total_chapters=total_chapters,
             current_chunk=current_chunk_done + 1,
@@ -301,7 +326,11 @@ class IncrementalProcessor:
                 cp.error_message = saved_cp[i].get("error_message", None)
                 # Rebuild chunk list if missing
                 if not cp.chunks and cp.cleaned_text:
-                    starting_id = len(self.all_chunks) if self.all_chunks else saved_cp[i].get("chunks_count", 0)
+                    starting_id = (
+                        len(self.all_chunks)
+                        if self.all_chunks
+                        else saved_cp[i].get("chunks_count", 0)
+                    )
                     cp.chunks = chunk_chapter(
                         cp.cleaned_text,
                         self.config,
@@ -316,7 +345,7 @@ class IncrementalProcessor:
     # ------------------------------------------------------------------
     def _process_chapter(self, cp: ChapterProgress) -> None:
         chapter_idx = cp.chapter_index
-        self.logger.info(f"Starting chapter {chapter_idx+1}/{len(self.chapter_progress)}")
+        self.logger.info(f"Starting chapter {chapter_idx + 1}/{len(self.chapter_progress)}")
 
         if not cp.chunks:
             starting_chunk_id = len(self.all_chunks)
@@ -332,7 +361,7 @@ class IncrementalProcessor:
             if cp.processed_chunks >= len(cp.chunks):
                 continue
             if self.stop_requested:
-                self.logger.warning(f"Aborting during chapter {chapter_idx+1} chunk {chunk.id}")
+                self.logger.warning(f"Aborting during chapter {chapter_idx + 1} chunk {chunk.id}")
                 raise AbortException("Processing aborted")
 
             out_wav = self.project.chunks_dir / f"chunk_{chunk.id:05d}.wav"
@@ -341,23 +370,23 @@ class IncrementalProcessor:
                 chunk_wav_files.append(out_wav)
                 cp.processed_chunks += 1
                 self.all_chunks.append(chunk)
-                                # Check for graceful stop after completing the current chunk
+                # Check for graceful stop after completing the current chunk
                 if self.graceful_stop_requested:
                     self._save_progress()
                     self.stop_requested = True
                     raise AbortException("Processing stopped after current chunk")
-                
+
                 self.logger.debug(f"Chunk {chunk.id} done")
             except Exception as e:
                 cp.error_message = f"Chunk {chunk.id}: {e}"
-                self.logger.error(f"Error in chapter {chapter_idx+1} chunk {chunk.id}: {e}")
+                self.logger.error(f"Error in chapter {chapter_idx + 1} chunk {chunk.id}: {e}")
                 raise
 
         if chunk_wav_files and not cp.chapter_audio_created:
             chapter_wav = self.project.chapters_dir / f"chapter_{chapter_idx + 1:02d}.wav"
             concat_wavs(chunk_wav_files, chapter_wav)
             cp.chapter_audio_created = True
-            self.logger.info(f"Chapter {chapter_idx+1} complete")
+            self.logger.info(f"Chapter {chapter_idx + 1} complete")
 
     def _save_progress(self) -> None:
         progress_data = {

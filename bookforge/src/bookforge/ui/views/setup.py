@@ -17,7 +17,7 @@ PREVIEW_TEXT = "Hello! This is my voice. I hope it sounds clear and natural."
 
 
 def view():
-    # Define local state variables at the top for nonlocal usage
+    # Local state variables for nonlocal usage
     book_event: Any | None = None
     speaker_event: Any | None = None
 
@@ -26,7 +26,7 @@ def view():
         ui.label("1. Setup").classes("text-h5 q-mb-md")
         ui.markdown("Choose your input, TTS backend, and voice settings.")
 
-        # Clone settings from existing project
+        # Clone settings
         with ui.row().classes("items-center gap-2 q-mb-md"):
             ui.label("Clone settings from").classes("text-caption")
             clone_select = ui.select(
@@ -36,7 +36,9 @@ def view():
             ).classes("w-64")
             ui.tooltip("Copy configuration from a previous project")
 
+        # Main two-column layout
         with ui.row().classes("w-full gap-8"):
+            # Left column: Source
             with ui.column().classes("col-12 col-md-6"):
                 ui.label("📖 Source").classes("font-bold")
                 book_select = ui.select(
@@ -55,42 +57,48 @@ def view():
                 )
                 ui.tooltip("Folder name under out/ where your audiobook will be stored")
 
+            # Right column: Voice
             with ui.column().classes("col-12 col-md-6"):
                 ui.label("🎤 Voice").classes("font-bold")
                 backend_radio = ui.radio(
                     ["piper", "xtts"], value="xtts", on_change=lambda: build_voice_widgets()
                 ).props("inline")
                 ui.tooltip("XTTS offers high‑quality voice cloning; Piper is fast CPU‑based")
-                voice_container = ui.column().classes("w-full")
-                voice_model_select: ui.select | None = None
+
+                # Container for dynamic voice options (only one shown)
+                voice_options = ui.column().classes("w-full")
+                # Piper-specific widgets
+                piper_container = ui.column().classes("w-full")
+                voice_model_select = ui.select(
+                    label="Piper voice model",
+                    options=[""]
+                    + sorted([p.name for p in Path("voices").glob("*.onnx") if p.is_file()]),
+                    value="",
+                ).classes("w-full")
+                # XTTS-specific widgets
+                xtts_container = ui.column().classes("w-full")
                 speaker_label = ui.label("No speaker file selected").classes(
                     "text-caption text-grey"
                 )
+                ui.upload(
+                    label="Reference speaker WAV",
+                    on_upload=lambda e: on_speaker_upload(e),
+                    auto_upload=True,
+                ).classes("w-full")
 
                 def build_voice_widgets():
-                    nonlocal voice_model_select
-                    voice_container.clear()
+                    """Toggle visibility of piper/xtts option containers."""
                     if backend_radio.value == "piper":
-                        voice_model_select = ui.select(
-                            label="Piper voice model",
-                            options=[""]
-                            + sorted(
-                                [p.name for p in Path("voices").glob("*.onnx") if p.is_file()]
-                            ),
-                            value="",
-                        ).classes("w-full")
-                        ui.tooltip("Choose an ONNX voice model from voices/")
+                        piper_container.visible = True
+                        xtts_container.visible = False
                     else:
-                        ui.upload(
-                            label="Reference speaker WAV",
-                            on_upload=lambda e: on_speaker_upload(e),
-                            auto_upload=True,
-                        ).classes("w-full")
-                        ui.tooltip("Upload a clear WAV sample – processed immediately")
-                        voice_model_select = None
+                        piper_container.visible = False
+                        xtts_container.visible = True
 
+                # Initially show XTTS (default backend)
                 build_voice_widgets()
 
+                # Static voice settings
                 preset_select = ui.select(
                     label="Preset",
                     options=["calm_longform", "calm_longform_v2"],
@@ -114,7 +122,7 @@ def view():
                     label="Target LUFS", value=-16.0, step=0.5, format="%.1f"
                 ).bind_visibility_from(normalize_check, "value")
 
-        # Save button with spinner
+        # Save button + spinner
         with ui.row().classes("items-center gap-4"):
             save_btn = ui.button("Save & Continue", on_click=lambda: setup_next()).props(
                 "unelevated color=primary"
@@ -122,7 +130,7 @@ def view():
             setup_spinner = ui.spinner(size="md").props("color=primary")
             setup_spinner.visible = False
 
-        # Voice preview button and audio player
+        # Voice preview
         with ui.row().classes("items-center gap-4"):
             ui.button("Test Voice", on_click=lambda: voice_preview()).props("flat color=secondary")
             preview_spinner = ui.spinner(size="sm").props("color=secondary")
@@ -144,7 +152,8 @@ def view():
         target_lufs.value = -16.0
         speaker_label.set_text("No speaker file selected")
         clone_select.value = ""
-        preview_audio.classes(remove="hidden")  # hide preview if reset
+        preview_audio.classes("hidden")
+        preview_audio.set_source("")
 
     async def clone_settings(project_name: str):
         if not project_name:
@@ -221,11 +230,11 @@ def view():
         voice_model: Path | None = None
         speaker_wav: Path | None = None
         if backend == "piper":
-            if not voice_model_select or not voice_model_select.value:
+            if not voice_model_select.value:
                 errors.append("Piper voice model is required.")
             else:
                 voice_model = Path("voices") / voice_model_select.value
-                if voice_model is not None and not voice_model.exists():
+                if not voice_model.exists():
                     errors.append(f"Voice model not found: {voice_model}")
         else:
             if speaker_event is None:
@@ -283,23 +292,21 @@ def view():
     async def voice_preview():
         nonlocal speaker_event
         preview_spinner.visible = True
-        preview_audio.classes(remove="hidden")
-        preview_audio.set_source("")  # clear previous
-
+        preview_audio.classes("hidden")
         backend = backend_radio.value
         voice_model: Path | None = None
         speaker_wav: Path | None = None
 
         try:
             if backend == "piper":
-                if not voice_model_select or not voice_model_select.value:
+                if not voice_model_select.value:
                     safe_notify("Select a Piper voice model first.", type="warning")
                     return
                 voice_model = Path("voices") / voice_model_select.value
                 if not voice_model.exists():
                     safe_notify(f"Voice model not found: {voice_model}", type="negative")
                     return
-            else:  # xtts
+            else:
                 if speaker_event is None:
                     safe_notify("Upload a reference speaker WAV first.", type="warning")
                     return
@@ -311,7 +318,6 @@ def view():
                     safe_notify(f"Failed to read speaker WAV: {e}", type="negative")
                     return
 
-            # Create a temporary Chunk
             from bookforge.config import PresetConfig
             from bookforge.process.chunker import Chunk
             from bookforge.tts.factory import get_backend
@@ -324,7 +330,6 @@ def view():
                 text=PREVIEW_TEXT,
                 estimated_seconds=5.0,
             )
-
             tts_backend = await asyncio.to_thread(
                 get_backend,
                 backend_type=backend,
@@ -345,9 +350,9 @@ def view():
         finally:
             preview_spinner.visible = False
 
-    # Attach functions and elements to the container
+    # Attach functions and elements to container
     container.reset_form = reset_form
-    container.switch_to_prepare = None  # will be set by main
+    container.switch_to_prepare = None
     container.preview_audio = preview_audio
 
     return container

@@ -2,6 +2,8 @@
 Prepare view – initiate text preparation and show chapter detection preview.
 """
 
+from __future__ import annotations
+
 import asyncio
 
 from nicegui import ui
@@ -47,5 +49,5 @@ def view():
 
         prepare_btn.on_click(lambda: on_prepare())
 
-    container.switch_to_synthesize = None  # will be set by main
+    container.switch_to_synthesize = None  # set by main
     return container

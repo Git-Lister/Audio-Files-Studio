@@ -1,7 +1,3 @@
-"""
-Home view – entry point with cards for New Project and My Projects.
-"""
-
 from nicegui import ui
 
 

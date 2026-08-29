@@ -17,15 +17,7 @@ from bookforge.ui.components import (
     set_processor,
     update_progress_from_processor,
 )
-from bookforge.ui.views import (
-    finalize,
-    home,
-    prepare,
-    projects,
-    settings,
-    setup,
-    synthesize,
-)
+from bookforge.ui.views import finalize, home, prepare, projects, settings, setup, synthesize
 
 
 @ui.page("/")
@@ -43,24 +35,23 @@ async def main_page():
 
     init_notification_area()
 
+    # Clear any stale processor state to avoid auto‑loading on fresh page
+    set_processor(None)
+
     # ------------------------------------------------------------------
-    # Persistent sidebar and main content
+    # Sidebar and main content containers (created first)
     # ------------------------------------------------------------------
     with ui.header().classes("bg-primary text-white"):
         ui.label("🎙️ Audio‑Files Studio").classes("text-h5")
         project_badge = ui.label("").classes("text-caption")
 
-    with ui.left_drawer().classes("bg-blue-grey-1") as drawer:
+    with ui.left_drawer().classes("bg-blue-grey-1"):
         with ui.column().classes("w-full p-4"):
             ui.label("Navigation").classes("text-h6 text-grey-8")
             ui.separator()
-            nav_home = ui.button("Home", on_click=lambda: navigate("home")).props("flat align=left")
-            nav_projects = ui.button("Projects", on_click=lambda: navigate("projects")).props(
-                "flat align=left"
-            )
-            nav_settings = ui.button("Settings", on_click=lambda: navigate("settings")).props(
-                "flat align=left"
-            )
+            ui.button("Home", on_click=lambda: navigate("home")).props("flat align=left")
+            ui.button("Projects", on_click=lambda: navigate("projects")).props("flat align=left")
+            ui.button("Settings", on_click=lambda: navigate("settings")).props("flat align=left")
             ui.separator()
             pipeline_label = ui.label("Project Pipeline").classes("text-h6 text-grey-8 mt-4")
             nav_setup = ui.button("1. Setup", on_click=lambda: navigate_pipeline("setup")).props(
@@ -89,45 +80,11 @@ async def main_page():
     main_content = ui.column().classes("w-full p-4")
 
     # ------------------------------------------------------------------
-    # Create all view containers
-    # ------------------------------------------------------------------
-    home_container = home.view(lambda: start_new_project(), lambda: navigate("projects"))
-    projects_container = projects.view()
-    settings_container = settings.view()
-    setup_card = setup.view()
-    prepare_card = prepare.view()
-    synthesize_card = synthesize.view()
-    finalize_card = finalize.view()
-    review_card = ui.column()  # placeholder
-
-    with main_content:
-        home_container
-        projects_container
-        settings_container
-        setup_card
-        prepare_card
-        synthesize_card
-        finalize_card
-        review_card
-
-    # Set all invisible initially
-    for c in (
-        home_container,
-        projects_container,
-        settings_container,
-        setup_card,
-        prepare_card,
-        synthesize_card,
-        finalize_card,
-        review_card,
-    ):
-        c.visible = False
-
-    # ------------------------------------------------------------------
-    # Navigation helpers
+    # Define navigation functions BEFORE creating view containers
     # ------------------------------------------------------------------
     def navigate(view: str):
         app.storage.general["current_view"] = view
+        # Hide all containers
         for c in (
             home_container,
             projects_container,
@@ -202,22 +159,44 @@ async def main_page():
         else:
             project_badge.set_text("")
 
-    # ------------------------------------------------------------------
-    # Start new project
-    # ------------------------------------------------------------------
     def start_new_project():
         set_processor(None)
         setup_card.reset_form()
         navigate_pipeline("setup")
 
-    # Link callbacks
+    # ------------------------------------------------------------------
+    # Create view containers inside main content (now functions exist)
+    # ------------------------------------------------------------------
+    with main_content:
+        home_container = home.view(lambda: start_new_project(), lambda: navigate("projects"))
+        projects_container = projects.view()
+        settings_container = settings.view()
+        setup_card = setup.view()
+        prepare_card = prepare.view()
+        synthesize_card = synthesize.view()
+        finalize_card = finalize.view()
+        review_card = ui.column()  # placeholder
+
+        # Set all invisible initially
+        home_container.visible = False
+        projects_container.visible = False
+        settings_container.visible = False
+        setup_card.visible = False
+        prepare_card.visible = False
+        synthesize_card.visible = False
+        finalize_card.visible = False
+        review_card.visible = False
+
+    # ------------------------------------------------------------------
+    # Link switch callbacks (now containers exist)
+    # ------------------------------------------------------------------
     setup_card.switch_to_prepare = lambda: navigate_pipeline("prepare")
     prepare_card.switch_to_synthesize = lambda: navigate_pipeline("synthesize")
     synthesize_card.switch_to_finalize = lambda: navigate_pipeline("finalize")
     finalize_card.switch_to_projects = lambda: navigate("projects")
 
     # ------------------------------------------------------------------
-    # Resume project (defined before assignment to avoid UnboundLocalError)
+    # Resume project function (defined before assignment to projects container)
     # ------------------------------------------------------------------
     async def resume_project(project_name: str):
         from bookforge.incremental_processor import IncrementalProcessor
@@ -290,17 +269,12 @@ async def main_page():
         safe_notify(f"Resumed '{project_name}'", type="positive")
         navigate_pipeline("synthesize")
 
-    # Now assign the resume function to projects container
     projects_container.on_resume = resume_project
 
     # ------------------------------------------------------------------
-    # Initial state
+    # Initial view – always start at home; no auto‑loading
     # ------------------------------------------------------------------
-    proc = get_processor()
-    if proc and proc.book_text:
-        navigate_pipeline("synthesize")
-    else:
-        navigate("home")
+    navigate("home")
 
     ui.markdown("---")
     ui.markdown("Audio‑Files Studio · MIT License · running locally")

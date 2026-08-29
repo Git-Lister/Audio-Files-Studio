@@ -2,6 +2,8 @@
 Projects view – list, review, resume, and delete projects.
 """
 
+from __future__ import annotations
+
 import json
 import shutil
 from pathlib import Path
@@ -51,6 +53,7 @@ def view():
                     ui.separator()
                 else:
                     meta_path = project_path / "meta.json"
+                    meta = {}
                     if meta_path.exists():
                         try:
                             with meta_path.open("r") as f:
@@ -62,8 +65,10 @@ def view():
                     if book_wav.exists():
                         ui.audio(str(book_wav)).classes("w-full")
                     chapters = sorted(project_path.glob("chapters/*.wav"))
-                    for ch in chapters:
-                        with ui.expansion(ch.stem, icon="menu_book").classes("w-full"):
+                    chapter_titles = meta.get("chapter_titles", [])
+                    for idx, ch in enumerate(chapters):
+                        title = chapter_titles[idx] if idx < len(chapter_titles) else ch.stem
+                        with ui.expansion(title, icon="menu_book").classes("w-full"):
                             ui.audio(str(ch))
                     ui.button(
                         "Delete Project", on_click=lambda p=project_name: delete_project(p)
@@ -77,5 +82,5 @@ def view():
                 safe_notify(f"Deleted '{project_name}'", type="warning")
                 refresh_project_list()
 
-    container.on_resume = None  # will be set by main
+    container.on_resume = None
     return container
