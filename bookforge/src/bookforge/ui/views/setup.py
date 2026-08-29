@@ -1,5 +1,5 @@
 """
-Setup view – form for new project configuration.
+Setup view – form for new project configuration and voice preview.
 """
 
 from __future__ import annotations
@@ -13,13 +13,15 @@ from nicegui import ui
 
 from bookforge.ui.components import extract_upload_bytes, safe_notify, set_processor
 
+PREVIEW_TEXT = "Hello! This is my voice. I hope it sounds clear and natural."
+
 
 def view():
-    container = ui.column().classes("w-full")
     # Define local state variables at the top for nonlocal usage
     book_event: Any | None = None
     speaker_event: Any | None = None
 
+    container = ui.column().classes("w-full")
     with container:
         ui.label("1. Setup").classes("text-h5 q-mb-md")
         ui.markdown("Choose your input, TTS backend, and voice settings.")
@@ -120,10 +122,12 @@ def view():
             setup_spinner = ui.spinner(size="md").props("color=primary")
             setup_spinner.visible = False
 
-        # Voice preview button (placeholder)
-        ui.button("Test Voice", on_click=lambda: voice_preview()).props("flat color=secondary")
-        preview_spinner = ui.spinner(size="sm").props("color=secondary")
-        preview_spinner.visible = False
+        # Voice preview button and audio player
+        with ui.row().classes("items-center gap-4"):
+            ui.button("Test Voice", on_click=lambda: voice_preview()).props("flat color=secondary")
+            preview_spinner = ui.spinner(size="sm").props("color=secondary")
+            preview_spinner.visible = False
+        preview_audio = ui.audio("").classes("hidden q-mt-md")
 
     # ------------------------------------------------------------------
     # Helper functions
@@ -140,6 +144,7 @@ def view():
         target_lufs.value = -16.0
         speaker_label.set_text("No speaker file selected")
         clone_select.value = ""
+        preview_audio.classes(remove="hidden")  # hide preview if reset
 
     async def clone_settings(project_name: str):
         if not project_name:
@@ -276,11 +281,73 @@ def view():
             save_btn.enable()
 
     async def voice_preview():
+        nonlocal speaker_event
         preview_spinner.visible = True
-        safe_notify("Voice preview coming soon!", type="warning")
-        preview_spinner.visible = False
+        preview_audio.classes(remove="hidden")
+        preview_audio.set_source("")  # clear previous
 
-    # Expose functions needed by main
+        backend = backend_radio.value
+        voice_model: Path | None = None
+        speaker_wav: Path | None = None
+
+        try:
+            if backend == "piper":
+                if not voice_model_select or not voice_model_select.value:
+                    safe_notify("Select a Piper voice model first.", type="warning")
+                    return
+                voice_model = Path("voices") / voice_model_select.value
+                if not voice_model.exists():
+                    safe_notify(f"Voice model not found: {voice_model}", type="negative")
+                    return
+            else:  # xtts
+                if speaker_event is None:
+                    safe_notify("Upload a reference speaker WAV first.", type="warning")
+                    return
+                try:
+                    speaker_bytes, speaker_filename = await extract_upload_bytes(speaker_event)
+                    speaker_wav = Path("temp") / speaker_filename
+                    speaker_wav.write_bytes(speaker_bytes)
+                except Exception as e:  # noqa: BLE001
+                    safe_notify(f"Failed to read speaker WAV: {e}", type="negative")
+                    return
+
+            # Create a temporary Chunk
+            from bookforge.config import PresetConfig
+            from bookforge.process.chunker import Chunk
+            from bookforge.tts.factory import get_backend
+
+            config = PresetConfig.load(preset_select.value)
+            preview_chunk = Chunk(
+                id=9999,
+                chapter_index=0,
+                relative_index=0,
+                text=PREVIEW_TEXT,
+                estimated_seconds=5.0,
+            )
+
+            tts_backend = await asyncio.to_thread(
+                get_backend,
+                backend_type=backend,
+                voice_model=voice_model,
+                speaker_wav=speaker_wav,
+            )
+            tmp_wav = Path("temp") / f"preview_{backend}.wav"
+            await asyncio.to_thread(tts_backend.synthesize_chunk, preview_chunk, config, tmp_wav)
+
+            if tmp_wav.exists():
+                preview_audio.set_source(str(tmp_wav))
+                preview_audio.classes(remove="hidden")
+                safe_notify("Preview ready!", type="positive")
+            else:
+                safe_notify("Preview generation failed.", type="negative")
+        except Exception as e:  # noqa: BLE001
+            safe_notify(f"Voice preview error: {e}", type="negative")
+        finally:
+            preview_spinner.visible = False
+
+    # Attach functions and elements to the container
     container.reset_form = reset_form
     container.switch_to_prepare = None  # will be set by main
+    container.preview_audio = preview_audio
+
     return container

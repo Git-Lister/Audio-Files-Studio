@@ -1,5 +1,5 @@
 """
-Audio‑Files Studio – main UI entry point.
+Audio‑Files Studio – main UI entry point with sidebar navigation.
 """
 
 from __future__ import annotations
@@ -17,7 +17,15 @@ from bookforge.ui.components import (
     set_processor,
     update_progress_from_processor,
 )
-from bookforge.ui.views import finalize, home, prepare, projects, setup, synthesize
+from bookforge.ui.views import (
+    finalize,
+    home,
+    prepare,
+    projects,
+    settings,
+    setup,
+    synthesize,
+)
 
 
 @ui.page("/")
@@ -36,79 +44,180 @@ async def main_page():
     init_notification_area()
 
     # ------------------------------------------------------------------
-    # Create containers first
+    # Persistent sidebar and main content
     # ------------------------------------------------------------------
-    home_container = ui.column().classes("w-full")
-    projects_container = ui.column().classes("w-full")
-    pipeline_container = ui.column().classes("w-full")
-    pipeline_step_label = ui.label("").classes("text-subtitle1 q-mb-md")
+    with ui.header().classes("bg-primary text-white"):
+        ui.label("🎙️ Audio‑Files Studio").classes("text-h5")
+        project_badge = ui.label("").classes("text-caption")
+
+    with ui.left_drawer().classes("bg-blue-grey-1") as drawer:
+        with ui.column().classes("w-full p-4"):
+            ui.label("Navigation").classes("text-h6 text-grey-8")
+            ui.separator()
+            nav_home = ui.button("Home", on_click=lambda: navigate("home")).props("flat align=left")
+            nav_projects = ui.button("Projects", on_click=lambda: navigate("projects")).props(
+                "flat align=left"
+            )
+            nav_settings = ui.button("Settings", on_click=lambda: navigate("settings")).props(
+                "flat align=left"
+            )
+            ui.separator()
+            pipeline_label = ui.label("Project Pipeline").classes("text-h6 text-grey-8 mt-4")
+            nav_setup = ui.button("1. Setup", on_click=lambda: navigate_pipeline("setup")).props(
+                "flat align=left"
+            )
+            nav_prepare = ui.button(
+                "2. Prepare", on_click=lambda: navigate_pipeline("prepare")
+            ).props("flat align=left")
+            nav_synthesize = ui.button(
+                "3. Synthesize", on_click=lambda: navigate_pipeline("synthesize")
+            ).props("flat align=left")
+            nav_finalize = ui.button(
+                "4. Finalize", on_click=lambda: navigate_pipeline("finalize")
+            ).props("flat align=left")
+            nav_review = ui.button("5. Review", on_click=lambda: navigate_pipeline("review")).props(
+                "flat align=left"
+            )
+            # Initially hide pipeline items
+            pipeline_label.visible = False
+            nav_setup.visible = False
+            nav_prepare.visible = False
+            nav_synthesize.visible = False
+            nav_finalize.visible = False
+            nav_review.visible = False
+
+    main_content = ui.column().classes("w-full p-4")
 
     # ------------------------------------------------------------------
-    # Instantiate view functions
+    # Create all view containers
     # ------------------------------------------------------------------
-    home_container = home.view(lambda: start_new_project(), lambda: show_view("projects"))
+    home_container = home.view(lambda: start_new_project(), lambda: navigate("projects"))
     projects_container = projects.view()
+    settings_container = settings.view()
     setup_card = setup.view()
     prepare_card = prepare.view()
     synthesize_card = synthesize.view()
     finalize_card = finalize.view()
+    review_card = ui.column()  # placeholder
 
-    step_cards = {
-        "setup": setup_card,
-        "prepare": prepare_card,
-        "synthesize": synthesize_card,
-        "finalize": finalize_card,
-    }
+    with main_content:
+        home_container
+        projects_container
+        settings_container
+        setup_card
+        prepare_card
+        synthesize_card
+        finalize_card
+        review_card
 
-    # Add step cards to pipeline container
-    with pipeline_container:
-        with ui.row().classes("w-full justify-end"):
-            ui.button("← Back to Home", on_click=lambda: show_view("home")).props("flat")
-        pipeline_step_label
-        for card in step_cards.values():
-            card.visible = False
+    # Set all invisible initially
+    for c in (
+        home_container,
+        projects_container,
+        settings_container,
+        setup_card,
+        prepare_card,
+        synthesize_card,
+        finalize_card,
+        review_card,
+    ):
+        c.visible = False
 
     # ------------------------------------------------------------------
-    # View switching helpers
+    # Navigation helpers
     # ------------------------------------------------------------------
-    def show_view(view: str):
+    def navigate(view: str):
         app.storage.general["current_view"] = view
-        home_container.visible = view == "home"
-        projects_container.visible = view == "projects"
-        pipeline_container.visible = view == "pipeline"
-        if view == "pipeline":
-            proc = get_processor()
-            if proc:
-                if proc.is_complete():
-                    show_pipeline_step("finalize")
-                elif proc.book_text and proc.chapter_progress:
-                    show_pipeline_step("synthesize")
-                else:
-                    show_pipeline_step("prepare")
+        for c in (
+            home_container,
+            projects_container,
+            settings_container,
+            setup_card,
+            prepare_card,
+            synthesize_card,
+            finalize_card,
+            review_card,
+        ):
+            c.visible = False
+        if view == "home":
+            home_container.visible = True
+        elif view == "projects":
+            projects_container.visible = True
+        elif view == "settings":
+            settings_container.visible = True
+        pipeline_label.visible = False
+        nav_setup.visible = False
+        nav_prepare.visible = False
+        nav_synthesize.visible = False
+        nav_finalize.visible = False
+        nav_review.visible = False
+        update_project_badge()
+
+    def navigate_pipeline(step: str):
+        proc = get_processor()
+        if proc is None:
+            safe_notify("No active project. Start a new one or resume an existing.", type="warning")
+            navigate("home")
+            return
+        app.storage.general["current_view"] = f"pipeline_{step}"
+        for c in (
+            home_container,
+            projects_container,
+            settings_container,
+            setup_card,
+            prepare_card,
+            synthesize_card,
+            finalize_card,
+            review_card,
+        ):
+            c.visible = False
+        if step == "setup":
+            setup_card.visible = True
+        elif step == "prepare":
+            prepare_card.visible = True
+        elif step == "synthesize":
+            synthesize_card.visible = True
+        elif step == "finalize":
+            finalize_card.visible = True
+        elif step == "review":
+            review_card.visible = True
+        pipeline_label.visible = True
+        nav_setup.visible = True
+        nav_prepare.visible = True
+        nav_synthesize.visible = True
+        nav_finalize.visible = True
+        nav_review.visible = True
+        update_project_badge()
+
+    def update_project_badge():
+        proc = get_processor()
+        if proc:
+            if proc.is_complete():
+                project_badge.set_text(f"Project: {proc.output_dir.name} (Completed)")
             else:
-                show_pipeline_step("setup")
+                progress = proc.get_progress()
+                project_badge.set_text(
+                    f"Project: {proc.output_dir.name} – {progress.status_message}"
+                )
+        else:
+            project_badge.set_text("")
 
-    def show_pipeline_step(step: str):
-        pipeline_step_label.set_text(f"Step: {step.title()}")
-        for name, card in step_cards.items():
-            card.visible = name == step
-
+    # ------------------------------------------------------------------
+    # Start new project
+    # ------------------------------------------------------------------
     def start_new_project():
         set_processor(None)
-        setup.reset_form()
-        show_view("pipeline")
-        show_pipeline_step("setup")
+        setup_card.reset_form()
+        navigate_pipeline("setup")
+
+    # Link callbacks
+    setup_card.switch_to_prepare = lambda: navigate_pipeline("prepare")
+    prepare_card.switch_to_synthesize = lambda: navigate_pipeline("synthesize")
+    synthesize_card.switch_to_finalize = lambda: navigate_pipeline("finalize")
+    finalize_card.switch_to_projects = lambda: navigate("projects")
 
     # ------------------------------------------------------------------
-    # Link switch callbacks
-    # ------------------------------------------------------------------
-    setup_card.switch_to_prepare = lambda: show_pipeline_step("prepare")
-    prepare_card.switch_to_synthesize = lambda: show_pipeline_step("synthesize")
-    synthesize_card.switch_to_finalize = lambda: show_pipeline_step("finalize")
-    finalize_card.switch_to_projects = lambda: show_view("projects")
-
-    # ------------------------------------------------------------------
-    # Resume logic
+    # Resume project (defined before assignment to avoid UnboundLocalError)
     # ------------------------------------------------------------------
     async def resume_project(project_name: str):
         from bookforge.incremental_processor import IncrementalProcessor
@@ -179,24 +288,19 @@ async def main_page():
         set_processor(proc)
         update_progress_from_processor(proc)
         safe_notify(f"Resumed '{project_name}'", type="positive")
-        show_view("pipeline")
-        show_pipeline_step("synthesize")
+        navigate_pipeline("synthesize")
 
+    # Now assign the resume function to projects container
     projects_container.on_resume = resume_project
 
     # ------------------------------------------------------------------
-    # Initial view
+    # Initial state
     # ------------------------------------------------------------------
-    active_proc = get_processor()
-    if active_proc and active_proc.book_text:
-        show_view("pipeline")
-        if active_proc.is_complete():
-            show_pipeline_step("finalize")
-        else:
-            show_pipeline_step("synthesize")
-            update_progress_from_processor(active_proc)
+    proc = get_processor()
+    if proc and proc.book_text:
+        navigate_pipeline("synthesize")
     else:
-        show_view("home")
+        navigate("home")
 
     ui.markdown("---")
     ui.markdown("Audio‑Files Studio · MIT License · running locally")
