@@ -10,7 +10,6 @@ from pathlib import Path
 
 from nicegui import app, ui
 
-from bookforge.ui import finalize, home, prepare, projects, setup, synthesize
 from bookforge.ui.components import (
     get_processor,
     init_notification_area,
@@ -18,6 +17,7 @@ from bookforge.ui.components import (
     set_processor,
     update_progress_from_processor,
 )
+from bookforge.ui.views import finalize, home, prepare, projects, setup, synthesize
 
 
 @ui.page("/")
@@ -35,7 +35,42 @@ async def main_page():
 
     init_notification_area()
 
-    # Define view switching
+    # ------------------------------------------------------------------
+    # Create containers first
+    # ------------------------------------------------------------------
+    home_container = ui.column().classes("w-full")
+    projects_container = ui.column().classes("w-full")
+    pipeline_container = ui.column().classes("w-full")
+    pipeline_step_label = ui.label("").classes("text-subtitle1 q-mb-md")
+
+    # ------------------------------------------------------------------
+    # Instantiate view functions
+    # ------------------------------------------------------------------
+    home_container = home.view(lambda: start_new_project(), lambda: show_view("projects"))
+    projects_container = projects.view()
+    setup_card = setup.view()
+    prepare_card = prepare.view()
+    synthesize_card = synthesize.view()
+    finalize_card = finalize.view()
+
+    step_cards = {
+        "setup": setup_card,
+        "prepare": prepare_card,
+        "synthesize": synthesize_card,
+        "finalize": finalize_card,
+    }
+
+    # Add step cards to pipeline container
+    with pipeline_container:
+        with ui.row().classes("w-full justify-end"):
+            ui.button("← Back to Home", on_click=lambda: show_view("home")).props("flat")
+        pipeline_step_label
+        for card in step_cards.values():
+            card.visible = False
+
+    # ------------------------------------------------------------------
+    # View switching helpers
+    # ------------------------------------------------------------------
     def show_view(view: str):
         app.storage.general["current_view"] = view
         home_container.visible = view == "home"
@@ -64,43 +99,17 @@ async def main_page():
         show_view("pipeline")
         show_pipeline_step("setup")
 
-    # Create home view with callbacks
-    home_container = home.view(start_new_project, lambda: show_view("projects"))
-
-    # Create projects view
-    projects_container = projects.view()
-
-    # Pipeline container
-    pipeline_container = ui.column().classes("w-full")
-    pipeline_step_label = ui.label("").classes("text-subtitle1 q-mb-md")
-
-    # Instantiate pipeline step cards
-    setup_card = setup.view()
-    prepare_card = prepare.view()
-    synthesize_card = synthesize.view()
-    finalize_card = finalize.view()
-
-    step_cards = {
-        "setup": setup_card,
-        "prepare": prepare_card,
-        "synthesize": synthesize_card,
-        "finalize": finalize_card,
-    }
-
-    with pipeline_container:
-        with ui.row().classes("w-full justify-end"):
-            ui.button("← Back to Home", on_click=lambda: show_view("home")).props("flat")
-        pipeline_step_label
-        for card in step_cards.values():
-            card.visible = False
-
+    # ------------------------------------------------------------------
     # Link switch callbacks
+    # ------------------------------------------------------------------
     setup_card.switch_to_prepare = lambda: show_pipeline_step("prepare")
     prepare_card.switch_to_synthesize = lambda: show_pipeline_step("synthesize")
     synthesize_card.switch_to_finalize = lambda: show_pipeline_step("finalize")
     finalize_card.switch_to_projects = lambda: show_view("projects")
 
-    # Define resume logic before assigning to projects container
+    # ------------------------------------------------------------------
+    # Resume logic
+    # ------------------------------------------------------------------
     async def resume_project(project_name: str):
         from bookforge.incremental_processor import IncrementalProcessor
         from bookforge.tts.factory import get_backend
@@ -175,7 +184,9 @@ async def main_page():
 
     projects_container.on_resume = resume_project
 
+    # ------------------------------------------------------------------
     # Initial view
+    # ------------------------------------------------------------------
     active_proc = get_processor()
     if active_proc and active_proc.book_text:
         show_view("pipeline")

@@ -60,4 +60,4 @@ RUN mkdir -p /models
 
 EXPOSE 8501
 
-CMD ["python", "src/bookforge/ui_nicegui.py"]
+CMD ["python", "src/bookforge/ui/main.py"]

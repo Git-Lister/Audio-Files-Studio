@@ -121,9 +121,7 @@ def view():
             setup_spinner.visible = False
 
         # Voice preview button (placeholder)
-        preview_btn = ui.button("Test Voice", on_click=lambda: voice_preview()).props(
-            "flat color=secondary"
-        )
+        ui.button("Test Voice", on_click=lambda: voice_preview()).props("flat color=secondary")
         preview_spinner = ui.spinner(size="sm").props("color=secondary")
         preview_spinner.visible = False
 
@@ -222,7 +220,7 @@ def view():
                 errors.append("Piper voice model is required.")
             else:
                 voice_model = Path("voices") / voice_model_select.value
-                if not voice_model.exists():
+                if voice_model is not None and not voice_model.exists():
                     errors.append(f"Voice model not found: {voice_model}")
         else:
             if speaker_event is None:
@@ -240,6 +238,11 @@ def view():
             setup_spinner.visible = False
             save_btn.enable()
             return
+        if book_path is None:
+            safe_notify("Book path is missing.", type="negative")
+            setup_spinner.visible = False
+            save_btn.enable()
+            return
         try:
             from bookforge.incremental_processor import IncrementalProcessor
             from bookforge.tts.factory import get_backend
@@ -251,7 +254,7 @@ def view():
                 speaker_wav=speaker_wav,
             )
             proc = IncrementalProcessor(
-                input_file=book_path,  # Now assured not None
+                input_file=book_path,
                 output_dir=Path("out") / output_name.value.strip(),
                 backend=tts_backend,
                 preset=preset_select.value,

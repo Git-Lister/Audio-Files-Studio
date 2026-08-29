@@ -50,7 +50,7 @@ def view():
         graceful_stop_btn.visible = False
         abort_btn.visible = False
 
-        timer = ui.timer(1.0, lambda: refresh_ui())
+        ui.timer(1.0, lambda: refresh_ui())
 
         async def refresh_ui():
             pd = get_progress_dict()
@@ -115,6 +115,5 @@ def view():
             if proc:
                 proc.abort()
 
-        # Deactivate timer when not processing? We'll leave it active; it's harmless.
     container.switch_to_finalize = None  # set by main
     return container
