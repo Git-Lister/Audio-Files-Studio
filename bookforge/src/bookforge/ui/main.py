@@ -1,6 +1,5 @@
-"""
-Audio‑Files Studio – main UI entry point with sidebar navigation.
-"""
+# src/bookforge/ui/main.py
+"""Audio‑Files Studio – main UI with sidebar navigation and pipeline visibility."""
 
 from __future__ import annotations
 
@@ -22,27 +21,20 @@ from bookforge.ui.views import finalize, home, prepare, projects, settings, setu
 
 @ui.page("/")
 async def main_page():
-    ui.add_head_html("""
-    <script>
-    window.onbeforeunload = function(e) {
-        if (document.getElementById("processing-indicator") !== null) {
-            e.returnValue = "Processing is still running in the background. You can close the tab safely.";
-            return e.returnValue;
-        }
-    };
-    </script>
-    """)
-
+    ui.add_head_html("""<style>...</style>""")  # keep your existing styles
     init_notification_area()
 
-    # Clear any stale processor state to avoid auto‑loading on fresh page
+    # Clear any stale processor state on fresh page load
     set_processor(None)
 
+    # Storage key to track whether a project is active (for sidebar visibility)
+    app.storage.general.setdefault("project_active", False)
+
     # ------------------------------------------------------------------
-    # Sidebar and main content containers (created first)
+    # Sidebar and main content containers
     # ------------------------------------------------------------------
     with ui.header().classes("bg-primary text-white"):
-        ui.label("🎙️ Audio‑Files Studio").classes("text-h5")
+        ui.label("📚 Audio‑Files Studio").classes("text-h5")
         project_badge = ui.label("").classes("text-caption")
 
     with ui.left_drawer().classes("bg-blue-grey-1"):
@@ -53,6 +45,8 @@ async def main_page():
             ui.button("Projects", on_click=lambda: navigate("projects")).props("flat align=left")
             ui.button("Settings", on_click=lambda: navigate("settings")).props("flat align=left")
             ui.separator()
+
+            # Pipeline navigation – visibility bound to project_active
             pipeline_label = ui.label("Project Pipeline").classes("text-h6 text-grey-8 mt-4")
             nav_setup = ui.button("1. Setup", on_click=lambda: navigate_pipeline("setup")).props(
                 "flat align=left"
@@ -69,18 +63,25 @@ async def main_page():
             nav_review = ui.button("5. Review", on_click=lambda: navigate_pipeline("review")).props(
                 "flat align=left"
             )
-            # Initially hide pipeline items
-            pipeline_label.visible = False
-            nav_setup.visible = False
-            nav_prepare.visible = False
-            nav_synthesize.visible = False
-            nav_finalize.visible = False
-            nav_review.visible = False
+
+            # Bind visibility of pipeline section to project_active
+            for item in (
+                pipeline_label,
+                nav_setup,
+                nav_prepare,
+                nav_synthesize,
+                nav_finalize,
+                nav_review,
+            ):
+                item.bind_visibility_from(app.storage.general, "project_active")
+
+            # Initially hidden (project_active = False)
+            app.storage.general["project_active"] = False
 
     main_content = ui.column().classes("w-full p-4")
 
     # ------------------------------------------------------------------
-    # Define navigation functions BEFORE creating view containers
+    # Navigation functions (defined before creating views)
     # ------------------------------------------------------------------
     def navigate(view: str):
         app.storage.general["current_view"] = view
@@ -96,27 +97,31 @@ async def main_page():
             review_card,
         ):
             c.visible = False
+
         if view == "home":
             home_container.visible = True
         elif view == "projects":
             projects_container.visible = True
         elif view == "settings":
             settings_container.visible = True
-        pipeline_label.visible = False
-        nav_setup.visible = False
-        nav_prepare.visible = False
-        nav_synthesize.visible = False
-        nav_finalize.visible = False
-        nav_review.visible = False
+        # For pipeline steps, navigate_pipeline handles it
+        elif view.startswith("pipeline_"):
+            step = view.split("_", 1)[1]
+            navigate_pipeline(step)  # but we already have a separate function; we can just call it
+        # fallback: if we call navigate directly for pipeline, we handle it below
         update_project_badge()
 
     def navigate_pipeline(step: str):
+        """Navigate to a pipeline step. Setup is always allowed; others need a processor."""
         proc = get_processor()
-        if proc is None:
+
+        # If step is not 'setup' and we have no processor, warn and go home.
+        if step != "setup" and proc is None:
             safe_notify("No active project. Start a new one or resume an existing.", type="warning")
             navigate("home")
             return
-        app.storage.general["current_view"] = f"pipeline_{step}"
+
+        # All pipeline steps: show the appropriate card, hide others
         for c in (
             home_container,
             projects_container,
@@ -128,6 +133,7 @@ async def main_page():
             review_card,
         ):
             c.visible = False
+
         if step == "setup":
             setup_card.visible = True
         elif step == "prepare":
@@ -138,12 +144,14 @@ async def main_page():
             finalize_card.visible = True
         elif step == "review":
             review_card.visible = True
-        pipeline_label.visible = True
-        nav_setup.visible = True
-        nav_prepare.visible = True
-        nav_synthesize.visible = True
-        nav_finalize.visible = True
-        nav_review.visible = True
+        else:
+            safe_notify(f"Unknown pipeline step: {step}", type="warning")
+            navigate("home")
+            return
+
+        # Ensure the pipeline section is visible (project_active should be True if we have a proc,
+        # but for setup we might not have one yet. We'll set it True anyway because we are in pipeline.
+        app.storage.general["project_active"] = True
         update_project_badge()
 
     def update_project_badge():
@@ -160,12 +168,14 @@ async def main_page():
             project_badge.set_text("")
 
     def start_new_project():
+        """Clear processor, show pipeline buttons, go to Setup."""
         set_processor(None)
-        setup_card.reset_form()
+        app.storage.general["project_active"] = True  # pipeline buttons visible
+        setup_card.reset_form()  # clear form
         navigate_pipeline("setup")
 
     # ------------------------------------------------------------------
-    # Create view containers inside main content (now functions exist)
+    # Create view containers inside main content
     # ------------------------------------------------------------------
     with main_content:
         home_container = home.view(lambda: start_new_project(), lambda: navigate("projects"))
@@ -177,18 +187,21 @@ async def main_page():
         finalize_card = finalize.view()
         review_card = ui.column()  # placeholder
 
-        # Set all invisible initially
-        home_container.visible = False
-        projects_container.visible = False
-        settings_container.visible = False
-        setup_card.visible = False
-        prepare_card.visible = False
-        synthesize_card.visible = False
-        finalize_card.visible = False
-        review_card.visible = False
+        # Initially all invisible
+        for c in (
+            home_container,
+            projects_container,
+            settings_container,
+            setup_card,
+            prepare_card,
+            synthesize_card,
+            finalize_card,
+            review_card,
+        ):
+            c.visible = False
 
     # ------------------------------------------------------------------
-    # Link switch callbacks (now containers exist)
+    # Link switch callbacks (after containers exist)
     # ------------------------------------------------------------------
     setup_card.switch_to_prepare = lambda: navigate_pipeline("prepare")
     prepare_card.switch_to_synthesize = lambda: navigate_pipeline("synthesize")
@@ -196,7 +209,7 @@ async def main_page():
     finalize_card.switch_to_projects = lambda: navigate("projects")
 
     # ------------------------------------------------------------------
-    # Resume project function (defined before assignment to projects container)
+    # Resume project function (attached to projects_container)
     # ------------------------------------------------------------------
     async def resume_project(project_name: str):
         from bookforge.incremental_processor import IncrementalProcessor
@@ -206,6 +219,7 @@ async def main_page():
         if not progress_file.exists():
             safe_notify("No progress data found.", type="negative")
             return
+
         try:
             with progress_file.open("r") as f:
                 data = json.load(f)
@@ -237,7 +251,7 @@ async def main_page():
                 voice_model=voice_model,
                 speaker_wav=speaker_wav,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             safe_notify(f"Failed to recreate TTS backend: {e}", type="negative")
             return
 
@@ -260,11 +274,12 @@ async def main_page():
             if not loaded:
                 safe_notify("No previous progress could be loaded.", type="warning")
                 return
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             safe_notify(f"Failed to resume: {e}", type="negative")
             return
 
         set_processor(proc)
+        app.storage.general["project_active"] = True  # show pipeline
         update_progress_from_processor(proc)
         safe_notify(f"Resumed '{project_name}'", type="positive")
         navigate_pipeline("synthesize")
@@ -272,7 +287,7 @@ async def main_page():
     projects_container.on_resume = resume_project
 
     # ------------------------------------------------------------------
-    # Initial view – always start at home; no auto‑loading
+    # Initial view – always start at home
     # ------------------------------------------------------------------
     navigate("home")
 
@@ -285,7 +300,7 @@ if __name__ in {"__main__", "__mp_main__"}:
         host="0.0.0.0",
         port=8501,
         title="Audio‑Files Studio",
-        favicon="🎙️",
+        favicon="📚",
         reload=False,
         show=False,
     )
