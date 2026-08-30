@@ -5,12 +5,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from nicegui import ui
 
 from bookforge.ui.components import extract_upload_bytes, safe_notify, set_processor
+
+
+def sanitise_filename(name: str) -> str:
+    """Replace invalid filesystem characters with underscore."""
+    return re.sub(r"[^a-zA-Z0-9 _.-]", "_", name)
+
 
 PREVIEW_TEXT = "Hello! This is my voice. I hope it sounds clear and natural."
 
@@ -62,7 +69,6 @@ def view():
             safe_notify(f"Failed to read metadata: {e}", type="negative")
             return
 
-        # Populate form from metadata
         source_file = meta.get("source_file", "")
         book_name = Path(source_file).name if source_file else ""
         if book_name and (Path("books") / book_name).exists():
@@ -86,6 +92,12 @@ def view():
         normalize_check.value = meta.get("normalize", False)
         if meta.get("target_lufs"):
             target_lufs.value = float(meta["target_lufs"])
+
+        backend_params = meta.get("backend_params", {})
+        if backend_params:
+            temp_slider.value = backend_params.get("temperature", 0.667)
+            length_slider.value = backend_params.get("length_penalty", 1.0)
+            repeat_slider.value = backend_params.get("repetition_penalty", 5.0)
 
         safe_notify(f"Cloned settings from '{project_name}'.", type="positive")
 
@@ -136,6 +148,16 @@ def view():
                 except Exception as e:
                     errors.append(f"Failed to read speaker WAV: {e}")
 
+        # ---- Gather advanced XTTS parameters ----
+        xtts_kwargs = {}
+        if backend == "xtts":
+            xtts_kwargs = {
+                "temperature": temp_slider.value,
+                "length_penalty": length_slider.value,
+                "repetition_penalty": repeat_slider.value,
+                "language": "en",
+            }
+
         # ---- Report errors ----
         if errors:
             for err in errors:
@@ -150,6 +172,13 @@ def view():
             save_btn.enable()
             return
 
+        # ---- Sanitise output name ----
+        output_name_sanitised = sanitise_filename(output_name.value.strip())
+        if not output_name_sanitised:
+            safe_notify("Project name invalid after sanitisation.", type="negative")
+            return
+        project_output_dir = Path("out") / output_name_sanitised
+
         # ---- Create processor ----
         try:
             from bookforge.incremental_processor import IncrementalProcessor
@@ -160,11 +189,12 @@ def view():
                 backend_type=backend,
                 voice_model=voice_model,
                 speaker_wav=speaker_wav,
+                **xtts_kwargs,
             )
 
             proc = IncrementalProcessor(
                 input_file=book_path,
-                output_dir=Path("out") / output_name.value.strip(),
+                output_dir=project_output_dir,
                 backend=tts_backend,
                 preset=preset_select.value,
                 chapter_strategy=chapter_strategy.value,
@@ -173,11 +203,11 @@ def view():
                 target_lufs=target_lufs.value,
                 voice_model=voice_model,
                 speaker_wav=speaker_wav,
+                backend_params=xtts_kwargs,
             )
             proc.backend_name = backend
             set_processor(proc)
             safe_notify("Configuration saved!", type="positive")
-            # Switch to Prepare view (callback set by main.py)
             if hasattr(container, "switch_to_prepare") and container.switch_to_prepare:
                 container.switch_to_prepare()
         except Exception as e:
@@ -228,11 +258,21 @@ def view():
                 estimated_seconds=5.0,
             )
 
+            xtts_kwargs = {}
+            if backend == "xtts":
+                xtts_kwargs = {
+                    "temperature": temp_slider.value,
+                    "length_penalty": length_slider.value,
+                    "repetition_penalty": repeat_slider.value,
+                    "language": "en",
+                }
+
             tts_backend = await asyncio.to_thread(
                 get_backend,
                 backend_type=backend,
                 voice_model=voice_model,
                 speaker_wav=speaker_wav,
+                **xtts_kwargs,
             )
 
             tmp_wav = Path("temp") / f"preview_{backend}.wav"
@@ -267,6 +307,9 @@ def view():
         clone_select.value = ""
         preview_audio.classes("hidden")
         preview_audio.set_source("")
+        temp_slider.value = 0.667
+        length_slider.value = 1.0
+        repeat_slider.value = 5.0
 
     # ----- Build the UI (now all functions are defined) -----
     container = ui.column().classes("w-full")
@@ -301,7 +344,7 @@ def view():
 
                 ui.upload(
                     label="Or upload a .txt file",
-                    on_upload=on_book_upload,  # now defined
+                    on_upload=on_book_upload,
                 ).classes("w-full")
 
                 output_name = ui.input(
@@ -341,7 +384,7 @@ def view():
                     )
                     ui.upload(
                         label="Reference speaker WAV",
-                        on_upload=on_speaker_upload,  # now defined
+                        on_upload=on_speaker_upload,
                         auto_upload=True,
                     ).classes("w-full")
 
@@ -376,6 +419,31 @@ def view():
                     step=0.5,
                     format="%.1f",
                 ).bind_visibility_from(normalize_check, "value")
+
+                # ---- Advanced voice settings (collapsible) ----
+                with ui.expansion("Advanced Voice Settings", icon="settings").classes(
+                    "w-full q-mt-md"
+                ):
+                    temp_slider = ui.slider(min=0.1, max=1.0, step=0.01, value=0.667).classes(
+                        "w-full"
+                    )
+                    ui.label().bind_text_from(
+                        temp_slider, "value", backward=lambda v: f"Temperature: {v:.2f}"
+                    )
+
+                    length_slider = ui.slider(min=0.5, max=2.0, step=0.05, value=1.0).classes(
+                        "w-full"
+                    )
+                    ui.label().bind_text_from(
+                        length_slider, "value", backward=lambda v: f"Length Penalty: {v:.2f}"
+                    )
+
+                    repeat_slider = ui.slider(min=1.0, max=10.0, step=0.5, value=5.0).classes(
+                        "w-full"
+                    )
+                    ui.label().bind_text_from(
+                        repeat_slider, "value", backward=lambda v: f"Repetition Penalty: {v:.1f}"
+                    )
 
         # ---- Action buttons ----
         with ui.row().classes("items-center gap-4"):

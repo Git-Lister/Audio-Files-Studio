@@ -1,6 +1,5 @@
 typer>=0.12.0
 pathvalidate>=3.2.0
-streamlit>=1.30.0
 ffmpeg-python>=0.2.0
 piper-tts>=1.4.0
 ebooklib>=0.20
@@ -10,3 +9,6 @@ pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
 nicegui>=1.4.0
 transformers>=4.42.4
+torch>=2.0.0
+TTS>=0.22.0
+pyyaml>=6.0

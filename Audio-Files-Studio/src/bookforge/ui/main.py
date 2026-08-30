@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
+
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
 from nicegui import app, ui
 
@@ -24,10 +27,7 @@ async def main_page():
     ui.add_head_html("""<style>...</style>""")  # keep your existing styles
     init_notification_area()
 
-    # Clear any stale processor state on fresh page load
     set_processor(None)
-
-    # Storage key to track whether a project is active (for sidebar visibility)
     app.storage.general.setdefault("project_active", False)
 
     # ------------------------------------------------------------------
@@ -46,7 +46,6 @@ async def main_page():
             ui.button("Settings", on_click=lambda: navigate("settings")).props("flat align=left")
             ui.separator()
 
-            # Pipeline navigation – visibility bound to project_active
             pipeline_label = ui.label("Project Pipeline").classes("text-h6 text-grey-8 mt-4")
             nav_setup = ui.button("1. Setup", on_click=lambda: navigate_pipeline("setup")).props(
                 "flat align=left"
@@ -64,7 +63,6 @@ async def main_page():
                 "flat align=left"
             )
 
-            # Bind visibility of pipeline section to project_active
             for item in (
                 pipeline_label,
                 nav_setup,
@@ -75,7 +73,6 @@ async def main_page():
             ):
                 item.bind_visibility_from(app.storage.general, "project_active")
 
-            # Initially hidden (project_active = False)
             app.storage.general["project_active"] = False
 
     main_content = ui.column().classes("w-full p-4")
@@ -85,7 +82,6 @@ async def main_page():
     # ------------------------------------------------------------------
     def navigate(view: str):
         app.storage.general["current_view"] = view
-        # Hide all containers
         for c in (
             home_container,
             projects_container,
@@ -104,24 +100,15 @@ async def main_page():
             projects_container.visible = True
         elif view == "settings":
             settings_container.visible = True
-        # For pipeline steps, navigate_pipeline handles it
-        elif view.startswith("pipeline_"):
-            step = view.split("_", 1)[1]
-            navigate_pipeline(step)  # but we already have a separate function; we can just call it
-        # fallback: if we call navigate directly for pipeline, we handle it below
         update_project_badge()
 
     def navigate_pipeline(step: str):
-        """Navigate to a pipeline step. Setup is always allowed; others need a processor."""
         proc = get_processor()
-
-        # If step is not 'setup' and we have no processor, warn and go home.
         if step != "setup" and proc is None:
             safe_notify("No active project. Start a new one or resume an existing.", type="warning")
             navigate("home")
             return
 
-        # All pipeline steps: show the appropriate card, hide others
         for c in (
             home_container,
             projects_container,
@@ -149,8 +136,6 @@ async def main_page():
             navigate("home")
             return
 
-        # Ensure the pipeline section is visible (project_active should be True if we have a proc,
-        # but for setup we might not have one yet. We'll set it True anyway because we are in pipeline.
         app.storage.general["project_active"] = True
         update_project_badge()
 
@@ -168,10 +153,9 @@ async def main_page():
             project_badge.set_text("")
 
     def start_new_project():
-        """Clear processor, show pipeline buttons, go to Setup."""
         set_processor(None)
-        app.storage.general["project_active"] = True  # pipeline buttons visible
-        setup_card.reset_form()  # clear form
+        app.storage.general["project_active"] = True
+        setup_card.reset_form()
         navigate_pipeline("setup")
 
     # ------------------------------------------------------------------
@@ -185,9 +169,8 @@ async def main_page():
         prepare_card = prepare.view()
         synthesize_card = synthesize.view()
         finalize_card = finalize.view()
-        review_card = ui.column()  # placeholder
+        review_card = ui.column()
 
-        # Initially all invisible
         for c in (
             home_container,
             projects_container,
@@ -201,15 +184,7 @@ async def main_page():
             c.visible = False
 
     # ------------------------------------------------------------------
-    # Link switch callbacks (after containers exist)
-    # ------------------------------------------------------------------
-    setup_card.switch_to_prepare = lambda: navigate_pipeline("prepare")
-    prepare_card.switch_to_synthesize = lambda: navigate_pipeline("synthesize")
-    synthesize_card.switch_to_finalize = lambda: navigate_pipeline("finalize")
-    finalize_card.switch_to_projects = lambda: navigate("projects")
-
-    # ------------------------------------------------------------------
-    # Resume project function (attached to projects_container)
+    # Define resume_project BEFORE assigning it to projects_container
     # ------------------------------------------------------------------
     async def resume_project(project_name: str):
         from bookforge.incremental_processor import IncrementalProcessor
@@ -244,12 +219,15 @@ async def main_page():
         voice_model = Path(voice_model_path) if voice_model_path else None
         speaker_wav = Path(speaker_wav_path) if speaker_wav_path else None
 
+        backend_params = data.get("backend_params", {})
+
         try:
             tts_backend = await asyncio.to_thread(
                 get_backend,
                 backend_type=backend_type,
                 voice_model=voice_model,
                 speaker_wav=speaker_wav,
+                **backend_params,
             )
         except Exception as e:
             safe_notify(f"Failed to recreate TTS backend: {e}", type="negative")
@@ -267,6 +245,8 @@ async def main_page():
                 target_lufs=float(data.get("target_lufs", -16.0)),
                 voice_model=voice_model,
                 speaker_wav=speaker_wav,
+                skip_failed=data.get("skip_failed", False),
+                backend_params=backend_params,
             )
             proc.backend_name = backend_type
             await asyncio.to_thread(proc.prepare_text)
@@ -279,12 +259,23 @@ async def main_page():
             return
 
         set_processor(proc)
-        app.storage.general["project_active"] = True  # show pipeline
+        app.storage.general["project_active"] = True
         update_progress_from_processor(proc)
         safe_notify(f"Resumed '{project_name}'", type="positive")
         navigate_pipeline("synthesize")
 
+    # ------------------------------------------------------------------
+    # Now assign resume_project to projects_container.on_resume
+    # ------------------------------------------------------------------
     projects_container.on_resume = resume_project
+
+    # ------------------------------------------------------------------
+    # Link switch callbacks (after containers exist)
+    # ------------------------------------------------------------------
+    setup_card.switch_to_prepare = lambda: navigate_pipeline("prepare")
+    prepare_card.switch_to_synthesize = lambda: navigate_pipeline("synthesize")
+    synthesize_card.switch_to_finalize = lambda: navigate_pipeline("finalize")
+    finalize_card.switch_to_projects = lambda: navigate("projects")
 
     # ------------------------------------------------------------------
     # Initial view – always start at home
