@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,8 +22,6 @@ from .tts.backend import TTSBackend
 
 
 class AbortException(Exception):
-    """Raised when processing is aborted by the user."""
-
     pass
 
 
@@ -80,7 +79,7 @@ class IncrementalProcessor:
         voice_model: Path | None = None,
         speaker_wav: Path | None = None,
         skip_failed: bool = False,
-        backend_params: dict | None = None,  # <-- new
+        backend_params: dict | None = None,
     ):
         self.input_file = input_file
         self.output_dir = output_dir
@@ -92,7 +91,7 @@ class IncrementalProcessor:
         self.normalize = normalize
         self.target_lufs = target_lufs
         self.skip_failed = skip_failed
-        self.backend_params = backend_params or {}  # <-- store
+        self.backend_params = backend_params or {}
 
         self.voice_model = voice_model
         self.speaker_wav = speaker_wav
@@ -129,6 +128,9 @@ class IncrementalProcessor:
                     self._chunk_metadata = json.load(f)
             except (json.JSONDecodeError, OSError):
                 self._chunk_metadata = []
+
+        # For context buffer
+        self._last_sentence = ""
 
     # ---- Public API ----
     def abort(self):
@@ -182,7 +184,6 @@ class IncrementalProcessor:
 
     def re_synthesize_chunk(self, chunk_id: int) -> None:
         """Re‑synthesize a single chunk by its ID, using the current backend and config."""
-        # Find the chunk in the metadata index
         chunk_meta = None
         for meta in self._chunk_metadata:
             if meta.get("id") == chunk_id:
@@ -192,14 +193,12 @@ class IncrementalProcessor:
         if not chunk_meta:
             raise ValueError(f"Chunk {chunk_id} not found in metadata.")
 
-        # Find the chapter progress that contains this chunk
         chapter_idx = chunk_meta.get("chapter_index")
         if chapter_idx is None or chapter_idx >= len(self.chapter_progress):
             raise ValueError(f"Chapter index {chapter_idx} out of range.")
 
         cp = self.chapter_progress[chapter_idx]
 
-        # Find the actual Chunk object
         chunk_obj = None
         for ch in cp.chunks:
             if ch.id == chunk_id:
@@ -207,7 +206,6 @@ class IncrementalProcessor:
                 break
 
         if not chunk_obj:
-            # Recreate the chunk from metadata if not in memory
             from .process.chunker import Chunk
 
             chunk_obj = Chunk(
@@ -224,24 +222,20 @@ class IncrementalProcessor:
         if wav_path.exists():
             wav_path.unlink()
 
-        # Re‑synthesize
+        # Re‑synthesize with context (optional)
         self.backend.synthesize_chunk(chunk_obj, self.config, wav_path)
 
-        # Update metadata
+        # Update metadata with actual duration
+        duration = self._get_audio_duration(wav_path)
         for meta in self._chunk_metadata:
             if meta.get("id") == chunk_id:
-                # Update with new info (e.g., duration) – we don't have duration from the backend,
-                # but we can keep the existing one or update later.
-                pass
+                meta["actual_duration"] = duration
 
-        # Reset chapter error if it was marked as failed
+        # Reset chapter error and mark as incomplete for re-concatenation
         if cp.error_message:
             cp.error_message = None
-
-        # Mark chapter as not fully processed (so it gets re‑concatenated)
         cp.chapter_audio_created = False
 
-        # Save progress
         self._save_progress()
         self.logger.info(f"Re‑synthesized chunk {chunk_id}")
 
@@ -283,7 +277,7 @@ class IncrementalProcessor:
                 "chapter_titles": self.book_text.chapter_titles if self.book_text else [],
                 "version": "1.2.0",
                 "processing_completed": datetime.now(timezone.utc).isoformat(),
-                "backend_params": self.backend_params,  # <-- saved in meta
+                "backend_params": self.backend_params,
             }
         )
         if self.progress_file.exists():
@@ -388,7 +382,7 @@ class IncrementalProcessor:
         if data.get("speaker_wav"):
             self.speaker_wav = Path(data["speaker_wav"])
         if data.get("backend_params"):
-            self.backend_params = data["backend_params"]  # <-- restore
+            self.backend_params = data["backend_params"]
 
         if self.book_text is None:
             self.prepare_text()
@@ -434,6 +428,9 @@ class IncrementalProcessor:
         max_retries = getattr(self.config, "retries", 3)
         retry_delay = getattr(self.config, "retry_delay", 1.0)
 
+        # Reset context buffer at start of chapter
+        self._last_sentence = ""
+
         for idx, chunk in enumerate(cp.chunks):
             if cp.processed_chunks > idx:
                 continue
@@ -450,14 +447,34 @@ class IncrementalProcessor:
                 self._save_progress()
                 continue
 
+            # ---- Context buffer: prepend last sentence from previous chunk ----
+            context_text = chunk.text
+            if self._last_sentence:
+                # Prepend last sentence with a separator (e.g., newline)
+                context_text = self._last_sentence + "\n\n" + context_text
+
+            # Create a temporary Chunk with context text, but keep original id and metadata
+            context_chunk = Chunk(
+                id=chunk.id,
+                chapter_index=chunk.chapter_index,
+                relative_index=chunk.relative_index,
+                text=context_text,
+                estimated_seconds=chunk.estimated_seconds,
+            )
+
             for attempt in range(1, max_retries + 1):
                 try:
-                    self.backend.synthesize_chunk(chunk, self.config, out_wav)
+                    self.backend.synthesize_chunk(context_chunk, self.config, out_wav)
                     chunk_wav_files.append(out_wav)
                     cp.processed_chunks += 1
+                    # Store actual duration
+                    duration = self._get_audio_duration(out_wav)
+                    chunk.estimated_seconds = duration  # update estimate
                     self._append_chunk_metadata(chunk)
                     self._save_progress()
                     self.logger.debug(f"Chunk {chunk.id} done")
+                    # Update last sentence: extract the last sentence from the *original* chunk text
+                    self._last_sentence = self._extract_last_sentence(chunk.text)
                     break
                 except Exception as e:
                     self.logger.warning(
@@ -486,8 +503,42 @@ class IncrementalProcessor:
             cp.chapter_audio_created = True
             self.logger.info(f"Chapter {chapter_idx + 1} complete")
 
+    def _extract_last_sentence(self, text: str) -> str:
+        """Extract the last sentence from a piece of text."""
+        import re
+
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        if sentences:
+            return sentences[-1].strip()
+        return ""
+
+    def _get_audio_duration(self, audio_path: Path) -> float:
+        """Get duration in seconds using ffprobe."""
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(audio_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return float(result.stdout.strip())
+        except Exception as e:
+            self.logger.warning(f"Failed to get duration for {audio_path}: {e}")
+            return 0.0
+
     def _append_chunk_metadata(self, chunk: Chunk) -> None:
-        self._chunk_metadata.append(chunk.to_dict())
+        data = chunk.to_dict()
+        data["actual_duration"] = chunk.estimated_seconds  # we updated it
+        self._chunk_metadata.append(data)
         with self.chunks_index_file.open("w") as f:
             json.dump(self._chunk_metadata, f, indent=2)
 
@@ -504,7 +555,7 @@ class IncrementalProcessor:
             "normalize": self.normalize,
             "target_lufs": self.target_lufs,
             "skip_failed": self.skip_failed,
-            "backend_params": self.backend_params,  # <-- save
+            "backend_params": self.backend_params,
             "chapter_progress": [
                 {
                     "chapter_index": cp.chapter_index,
@@ -538,10 +589,7 @@ class IncrementalProcessor:
         return self._format_time_remaining(elapsed)
 
     def _trim_trailing_silence(self, audio_path: Path) -> None:
-        """Trim trailing silence from an audio file using ffmpeg."""
         try:
-            import subprocess
-
             tmp = audio_path.parent / (audio_path.name + ".tmp.wav")
             subprocess.run(
                 [

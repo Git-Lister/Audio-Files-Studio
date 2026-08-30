@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 import time
 from pathlib import Path
 
 import torch
 
 # ---------------------------------------------------------------------------
-# PyTorch 2.6+ compatibility: Coqui TTS checkpoints need weights_only=False
+# PyTorch 2.6+ compatibility
 # ---------------------------------------------------------------------------
 _original_torch_load = torch.load
 
@@ -35,7 +36,6 @@ logger = logging.getLogger("bookforge.tts.xtts")
 
 
 def _split_safe(text: str, max_chars: int = 250) -> list[str]:
-    """Split text into segments ≤ max_chars, trying to break at sentence boundaries."""
     sentences = re.split(r"(?<=[.!?])\s+", text)
     segments = []
     for s in sentences:
@@ -50,7 +50,6 @@ def _split_safe(text: str, max_chars: int = 250) -> list[str]:
                 if len(part) <= max_chars:
                     segments.append(part)
                 else:
-                    # Force split at word boundaries
                     words = part.split()
                     current = ""
                     for w in words:
@@ -65,13 +64,41 @@ def _split_safe(text: str, max_chars: int = 250) -> list[str]:
     return segments
 
 
-class XTTSBackend(TTSBackend):
-    """XTTS v2 backend with full parameter control and retry logic."""
+def _preprocess_audio(input_path: Path, output_path: Path) -> None:
+    """
+    Preprocess reference audio: trim silence, normalize peak to -3dB, high-pass filter at 80Hz.
+    """
+    try:
+        cmd = [
+            "ffmpeg",
+            "-i",
+            str(input_path),
+            "-af",
+            "silenceremove=start_periods=1:start_duration=0.5:start_threshold=-40dB,"
+            "highpass=f=80,"
+            "volume=3dB",  # normalize peak to -3dB
+            "-ar",
+            "24000",  # ensure sample rate
+            "-ac",
+            "1",  # mono
+            str(output_path),
+            "-y",
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        logger.info(f"Preprocessed reference audio: {output_path}")
+    except Exception as e:
+        logger.warning(f"Reference preprocessing failed: {e}. Using original.")
+        # If preprocessing fails, just copy input to output
+        import shutil
 
+        shutil.copy(input_path, output_path)
+
+
+class XTTSBackend(TTSBackend):
     def __init__(
         self,
         model_name: str = "tts_models/multilingual/multi-dataset/xtts_v2",
-        gpu: bool | None = None,  # None = auto‑detect
+        gpu: bool | None = None,
         speaker_wav: Path | None = None,
         language: str = "en",
         temperature: float = 0.667,
@@ -87,7 +114,6 @@ class XTTSBackend(TTSBackend):
         device = "cuda" if gpu and torch.cuda.is_available() else "cpu"
         self._device = device
         self._model_name = model_name
-        self._speaker_wav = str(speaker_wav) if speaker_wav else None
         self._language = language
         self._temperature = temperature
         self._length_penalty = length_penalty
@@ -96,6 +122,14 @@ class XTTSBackend(TTSBackend):
         self._top_k = top_k
         self._retries = retries
         self._retry_delay = retry_delay
+
+        # Preprocess reference audio if provided
+        if speaker_wav:
+            processed_ref = speaker_wav.parent / f"processed_{speaker_wav.name}"
+            _preprocess_audio(speaker_wav, processed_ref)
+            self._speaker_wav = str(processed_ref)
+        else:
+            self._speaker_wav = None
 
         logger.info(f"Loading XTTS model '{model_name}' on {device}...")
         self.tts = TTS(model_name).to(device)
@@ -116,38 +150,56 @@ class XTTSBackend(TTSBackend):
 
         if len(safe_text) <= 250:
             self._synthesise_with_retry(safe_text, out_path)
-            return
+        else:
+            segments = _split_safe(safe_text, max_chars=250)
+            if len(segments) == 1:
+                self._synthesise_with_retry(segments[0], out_path)
+            else:
+                temp_files: list[Path] = []
+                try:
+                    for i, seg in enumerate(segments):
+                        tmp = out_path.with_name(f"{out_path.stem}_part_{i:04d}.wav")
+                        temp_files.append(tmp)
+                        self._synthesise_with_retry(seg, tmp)
+                    concat_wavs(temp_files, out_path)
+                except Exception as e:
+                    for tmp in temp_files:
+                        try:
+                            tmp.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    raise RuntimeError(
+                        f"Failed to concatenate segments for chunk {chunk.id}: {e}"
+                    ) from e
+                finally:
+                    for tmp in temp_files:
+                        try:
+                            tmp.unlink(missing_ok=True)
+                        except OSError:
+                            pass
 
-        segments = _split_safe(safe_text, max_chars=250)
-        if len(segments) == 1:
-            self._synthesise_with_retry(segments[0], out_path)
-            return
+        # Post-process audio: high-pass filter and normalize
+        self._postprocess_audio(out_path)
 
-        temp_files: list[Path] = []
+    def _postprocess_audio(self, file_path: Path) -> None:
+        """Apply high-pass filter and normalize peak to -3dB."""
         try:
-            for i, seg in enumerate(segments):
-                tmp = out_path.with_name(f"{out_path.stem}_part_{i:04d}.wav")
-                temp_files.append(tmp)
-                self._synthesise_with_retry(seg, tmp)
-            concat_wavs(temp_files, out_path)
+            tmp = file_path.parent / f"{file_path.stem}_tmp.wav"
+            cmd = [
+                "ffmpeg",
+                "-i",
+                str(file_path),
+                "-af",
+                "highpass=f=80, volume=3dB",
+                str(tmp),
+                "-y",
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            tmp.rename(file_path)
         except Exception as e:
-            # If concatenation fails, clean up partials and re‑raise
-            for tmp in temp_files:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            raise RuntimeError(f"Failed to concatenate segments for chunk {chunk.id}: {e}") from e
-        finally:
-            # Delete temporary files after success
-            for tmp in temp_files:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            logger.warning(f"Post-processing failed for {file_path}: {e}")
 
     def _synthesise_with_retry(self, text: str, file_path: Path) -> None:
-        """Synthesise a single text segment with exponential backoff retry."""
         for attempt in range(1, self._retries + 1):
             try:
                 self._synthesise_directly(text, file_path)
@@ -161,7 +213,6 @@ class XTTSBackend(TTSBackend):
                 time.sleep(self._retry_delay * (2 ** (attempt - 1)))
 
     def _synthesise_directly(self, text: str, file_path: Path) -> None:
-        """Low‑level synthesis call with all parameters."""
         kwargs = {
             "text": text,
             "file_path": str(file_path),

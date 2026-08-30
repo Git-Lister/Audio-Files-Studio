@@ -12,3 +12,6 @@ transformers>=4.42.4
 torch>=2.0.0
 TTS>=0.22.0
 pyyaml>=6.0
+inflect
+ffmpeg
+ffprobe
