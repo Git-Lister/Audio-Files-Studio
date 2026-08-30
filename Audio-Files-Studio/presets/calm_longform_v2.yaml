@@ -1,8 +1,0 @@
-voice: en_GB-southern_english_female-low
-rate: 0.95              # Slightly slower for clearer articulation
-pitch: 0.0
-pause_short: 0.4        # Slightly longer after commas
-pause_para: 1.5         # More breathing room between paragraphs
-pause_chapter: 4.0
-seed: 42
-target_chunk_secs: 30

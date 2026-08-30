@@ -1,8 +1,0 @@
-voice: en_GB-southern_english_female-medium
-rate: 0.9
-pitch: -0.1
-pause_short: 0.4
-pause_para: 1.5
-pause_chapter: 4.0
-seed: 42
-target_chunk_secs: 35

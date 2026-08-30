@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from nicegui import ui
+from nicegui import app, ui
 
 from bookforge.ui.components import extract_upload_bytes, safe_notify, set_processor
 
@@ -100,6 +100,69 @@ def view():
             repeat_slider.value = backend_params.get("repetition_penalty", 5.0)
 
         safe_notify(f"Cloned settings from '{project_name}'.", type="positive")
+
+    async def refresh_preset_list():
+        from bookforge.config import PresetConfig
+
+        presets = PresetConfig.list_presets()
+        options = [""]  # empty placeholder is always valid
+        if presets["system"]:
+            options.extend([f"{p} (built‑in)" for p in presets["system"]])
+        if presets["user"]:
+            options.extend([f"{p} (user)" for p in presets["user"]])
+        preset_dropdown.options = options
+        if preset_dropdown.value and preset_dropdown.value not in preset_dropdown.options:
+            preset_dropdown.value = ""
+
+    async def apply_preset(label: str):
+        if not label:
+            return
+        from bookforge.config import PresetConfig
+
+        name = label.split(" (")[0]
+        try:
+            config = PresetConfig.load(name)
+            if config.temperature is not None:
+                temp_slider.value = config.temperature
+            if config.length_penalty is not None:
+                length_slider.value = config.length_penalty
+            if config.repetition_penalty is not None:
+                repeat_slider.value = config.repetition_penalty
+            if config.voice in ["calm_longform", "calm_longform_v2"]:
+                preset_select.value = config.voice
+            safe_notify(f"Loaded preset: {name}", type="positive")
+        except Exception as e:
+            safe_notify(f"Failed to load preset: {e}", type="negative")
+
+    async def save_current_as_preset():
+        name = app.storage.general.get("new_preset_name", "").strip()
+        if not name:
+            safe_notify("Please enter a preset name.", type="warning")
+            return
+        from bookforge.config import PresetConfig
+
+        data = {
+            "voice": name,
+            "rate": 1.0,
+            "pitch": 0.0,
+            "pause_short": 0.3,
+            "pause_para": 1.2,
+            "pause_chapter": 3.0,
+            "seed": 42,
+            "target_chunk_secs": 30,
+            "temperature": temp_slider.value,
+            "length_penalty": length_slider.value,
+            "repetition_penalty": repeat_slider.value,
+            "language": "en",
+            "retries": 3,
+            "retry_delay": 1.0,
+        }
+        try:
+            PresetConfig.save_user_preset(name, data)
+            safe_notify(f"Preset '{name}' saved!", type="positive")
+            await refresh_preset_list()
+        except Exception as e:
+            safe_notify(f"Failed to save preset: {e}", type="negative")
 
     async def setup_next():
         """Validate form, create processor, and switch to Prepare view."""
@@ -310,6 +373,7 @@ def view():
         temp_slider.value = 0.667
         length_slider.value = 1.0
         repeat_slider.value = 5.0
+        app.storage.general["new_preset_name"] = "my-voice"
 
     # ----- Build the UI (now all functions are defined) -----
     container = ui.column().classes("w-full")
@@ -445,6 +509,25 @@ def view():
                         repeat_slider, "value", backward=lambda v: f"Repetition Penalty: {v:.1f}"
                     )
 
+                # ---- Preset Management ----
+                with ui.row().classes("w-full items-center gap-2 q-mt-md"):
+                    ui.label("Preset").classes("text-caption")
+                    preset_dropdown = ui.select(
+                        options=[""],  # <-- FIXED: include empty placeholder
+                        value="",
+                        on_change=lambda e: asyncio.create_task(apply_preset(e.value)),
+                    ).classes("flex-grow")
+                    ui.tooltip("Load a built‑in or user‑defined preset")
+
+                with ui.row().classes("w-full items-center gap-2"):
+                    ui.input(
+                        label="New preset name",
+                        value="my-voice",
+                    ).bind_value_to(app.storage.general, "new_preset_name").classes("flex-grow")
+                    ui.button("Save Preset", on_click=save_current_as_preset).props(
+                        "flat color=primary"
+                    )
+
         # ---- Action buttons ----
         with ui.row().classes("items-center gap-4"):
             save_btn = ui.button("Save & Continue", on_click=setup_next).props(
@@ -466,5 +549,8 @@ def view():
 
     # Initial visibility
     toggle_voice_options()
+
+    # Load preset dropdown
+    asyncio.create_task(refresh_preset_list())
 
     return container

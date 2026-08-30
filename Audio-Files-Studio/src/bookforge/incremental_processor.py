@@ -180,6 +180,71 @@ class IncrementalProcessor:
         self._save_progress()
         self.logger.info("Failed chapters reset for retry.")
 
+    def re_synthesize_chunk(self, chunk_id: int) -> None:
+        """Re‑synthesize a single chunk by its ID, using the current backend and config."""
+        # Find the chunk in the metadata index
+        chunk_meta = None
+        for meta in self._chunk_metadata:
+            if meta.get("id") == chunk_id:
+                chunk_meta = meta
+                break
+
+        if not chunk_meta:
+            raise ValueError(f"Chunk {chunk_id} not found in metadata.")
+
+        # Find the chapter progress that contains this chunk
+        chapter_idx = chunk_meta.get("chapter_index")
+        if chapter_idx is None or chapter_idx >= len(self.chapter_progress):
+            raise ValueError(f"Chapter index {chapter_idx} out of range.")
+
+        cp = self.chapter_progress[chapter_idx]
+
+        # Find the actual Chunk object
+        chunk_obj = None
+        for ch in cp.chunks:
+            if ch.id == chunk_id:
+                chunk_obj = ch
+                break
+
+        if not chunk_obj:
+            # Recreate the chunk from metadata if not in memory
+            from .process.chunker import Chunk
+
+            chunk_obj = Chunk(
+                id=chunk_id,
+                chapter_index=chapter_idx,
+                relative_index=chunk_meta.get("relative_index", 0),
+                text=chunk_meta.get("text", ""),
+                estimated_seconds=chunk_meta.get("estimated_seconds", 10.0),
+            )
+            cp.chunks.append(chunk_obj)
+
+        # Remove old WAV file
+        wav_path = self.project.chunks_dir / f"chunk_{chunk_id:05d}.wav"
+        if wav_path.exists():
+            wav_path.unlink()
+
+        # Re‑synthesize
+        self.backend.synthesize_chunk(chunk_obj, self.config, wav_path)
+
+        # Update metadata
+        for meta in self._chunk_metadata:
+            if meta.get("id") == chunk_id:
+                # Update with new info (e.g., duration) – we don't have duration from the backend,
+                # but we can keep the existing one or update later.
+                pass
+
+        # Reset chapter error if it was marked as failed
+        if cp.error_message:
+            cp.error_message = None
+
+        # Mark chapter as not fully processed (so it gets re‑concatenated)
+        cp.chapter_audio_created = False
+
+        # Save progress
+        self._save_progress()
+        self.logger.info(f"Re‑synthesized chunk {chunk_id}")
+
     def finalize_book(self) -> None:
         if not self.is_complete():
             raise ValueError("Cannot finalize: processing not complete")
