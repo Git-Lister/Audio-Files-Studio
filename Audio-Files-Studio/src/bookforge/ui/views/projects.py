@@ -1,5 +1,5 @@
 # src/bookforge/ui/views/projects.py
-"""Projects view – list all projects with resume and delete."""
+"""Projects view – grid of project cards with actions."""
 
 from __future__ import annotations
 
@@ -10,17 +10,17 @@ from pathlib import Path
 
 from nicegui import ui
 
+from bookforge.ui import state
 from bookforge.ui.components import get_processor, safe_notify, set_processor
 
 
 def view():
-    """Build the Projects view and return a container with a refresh() method."""
     container = ui.column().classes("w-full")
-    projects_list = ui.column().classes("w-full")
+    projects_grid = ui.column().classes("w-full")
 
     async def load_projects():
-        projects_list.clear()
-        with projects_list:
+        projects_grid.clear()
+        with projects_grid:
             out_dir = Path("out")
             if not out_dir.exists():
                 ui.label("No projects found.").classes("text-grey")
@@ -31,22 +31,47 @@ def view():
                 ui.label("No completed or in‑progress projects.").classes("text-grey")
                 return
 
-            for proj in sorted(
-                projects, key=lambda p: (p / "meta.json").stat().st_mtime, reverse=True
-            ):
-                with ui.card().classes("w-full q-mb-md"):
-                    with ui.row().classes("items-center justify-between w-full"):
-                        ui.label(proj.name).classes("text-h6")
-                        status = _get_project_status(proj)
-                        ui.label(status).classes("text-caption")
-
-                    with ui.row().classes("items-center gap-2"):
-                        ui.button("Resume", on_click=lambda p=proj: _resume_project(p)).props(
-                            "flat color=primary"
-                        )
-                        ui.button("Delete", on_click=lambda p=proj: _delete_project(p)).props(
-                            "flat color=negative icon=delete"
-                        )
+            with ui.row().classes("w-full items-stretch gap-4"):
+                for proj in sorted(
+                    projects, key=lambda p: (p / "meta.json").stat().st_mtime, reverse=True
+                ):
+                    with ui.card().classes("col-12 col-sm-6 col-md-4"):
+                        with ui.row().classes("items-center justify-between w-full"):
+                            ui.label(proj.name).classes("text-h6")
+                            status = _get_project_status(proj)
+                            ui.label(status).classes("text-caption")
+                        if status == "⏳ In progress":
+                            progress_path = proj / "processing_progress.json"
+                            if progress_path.exists():
+                                try:
+                                    with progress_path.open("r") as f:
+                                        data = json.load(f)
+                                    overall = data.get("overall_progress", 0)
+                                    ui.linear_progress(value=overall).props(
+                                        "size=10px color=primary"
+                                    )
+                                except:
+                                    pass
+                        with ui.row().classes("items-center gap-2 q-mt-sm"):
+                            ui.button("Resume", on_click=lambda p=proj: _resume_project(p)).props(
+                                "flat color=primary"
+                            )
+                            ui.button("Delete", on_click=lambda p=proj: _delete_project(p)).props(
+                                "flat color=negative icon=delete"
+                            )
+                            if status == "✅ Completed":
+                                m4b_path = proj / "book.m4b"
+                                if m4b_path.exists():
+                                    ui.button(
+                                        "Export M4B",
+                                        on_click=lambda p=proj: safe_notify(
+                                            f"M4B already exists at {m4b_path}", type="positive"
+                                        ),
+                                    ).props("flat color=secondary")
+                                else:
+                                    ui.button(
+                                        "Export M4B", on_click=lambda p=proj: _export_m4b(p)
+                                    ).props("flat color=secondary")
 
     def _get_project_status(proj: Path) -> str:
         meta_path = proj / "meta.json"
@@ -61,9 +86,10 @@ def view():
             return "⏳ In progress"
         return "📄 Prepared"
 
-    async def _resume_project(proj: Path):
-        if hasattr(container, "on_resume") and container.on_resume:
-            await container.on_resume(proj.name)
+    def _resume_project(proj: Path):
+        callback = state.get_resume_callback()
+        if callback:
+            asyncio.create_task(callback(proj.name))
         else:
             safe_notify("Resume not configured.", type="warning")
 
@@ -90,12 +116,14 @@ def view():
         except Exception as e:
             safe_notify(f"Failed to delete: {e}", type="negative")
 
+    async def _export_m4b(proj: Path):
+        safe_notify(
+            f"Export M4B for {proj.name} not yet implemented in Projects view", type="warning"
+        )
+
     async def refresh():
         await load_projects()
 
     asyncio.create_task(load_projects())
-
-    container.refresh = refresh
-    container.on_resume = None  # will be set by main.py
 
     return container

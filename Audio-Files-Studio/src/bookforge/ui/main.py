@@ -1,5 +1,5 @@
 # src/bookforge/ui/main.py
-"""Audio‑Files Studio – main UI with sidebar navigation and pipeline visibility."""
+"""Audio‑Files Studio – main UI with single content container."""
 
 from __future__ import annotations
 
@@ -8,139 +8,172 @@ import json
 import os
 from pathlib import Path
 
-os.environ["TRANSFORMERS_VERBOSITY"] = "error"
-
 from nicegui import app, ui
 
+from bookforge.ui import state
 from bookforge.ui.components import (
-    get_processor,
     init_notification_area,
     safe_notify,
-    set_processor,
+    update_notification_panel,
     update_progress_from_processor,
 )
-from bookforge.ui.views import finalize, home, prepare, projects, settings, setup, synthesize
+from bookforge.ui.views import home, pipeline, projects, settings, wizard
+
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
 
 @ui.page("/")
 async def main_page():
-    ui.add_head_html("""<style>...</style>""")  # keep your existing styles
+    ui.add_head_html("""
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .bg-primary { background-color: #1a1a2e !important; }
+        .bg-secondary { background-color: #0f3460 !important; }
+        .bg-accent { background-color: #c9a959 !important; }
+        .text-primary { color: #1a1a2e !important; }
+        .text-secondary { color: #0f3460 !important; }
+        .text-accent { color: #c9a959 !important; }
+        .text-gold { color: #c9a959 !important; }
+        .border-gold { border: 1px solid #c9a959 !important; }
+        .shadow-gold { box-shadow: 0 4px 12px rgba(201, 169, 89, 0.2) !important; }
+        .btn-gold { background-color: #c9a959 !important; color: #1a1a2e !important; }
+        .btn-gold:hover { background-color: #b8963e !important; }
+        .q-card { border-radius: 12px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important; }
+        .dark .text-grey-8 { color: #c0c0c0 !important; }
+        .dark .text-grey-6 { color: #a0a0a0 !important; }
+    </style>
+    """)
+
     init_notification_area()
 
-    set_processor(None)
-    app.storage.general.setdefault("project_active", False)
+    # Init state
+    state.set_processor(None)
+    state.set_current_view("home")
+    state.set_pipeline_step(None)
 
-    # ------------------------------------------------------------------
-    # Sidebar and main content containers
-    # ------------------------------------------------------------------
+    # ---- Dark mode management ----
+    def apply_dark_mode(enabled: bool):
+        """Apply dark mode to all UI elements."""
+        state.set_dark_mode(enabled)
+        ui.dark_mode(enabled)
+        # Update sidebar background
+        if enabled:
+            drawer.classes(remove="bg-blue-grey-1", add="bg-grey-9")
+            dark_btn.icon = "light_mode"
+        else:
+            drawer.classes(remove="bg-grey-9", add="bg-blue-grey-1")
+            dark_btn.icon = "dark_mode"
+        # Update notification panel text colors
+        update_notification_panel()
+        # Update settings toggle if it exists
+        if hasattr(state, "_settings_dark_toggle") and state._settings_dark_toggle is not None:
+            state._settings_dark_toggle.value = enabled
+
+    def toggle_dark_mode():
+        new_mode = not state.get_dark_mode()
+        apply_dark_mode(new_mode)
+
+    # Initial dark mode
+    dark_mode = state.get_dark_mode()
+    ui.dark_mode(dark_mode)
+
+    # ---- Header ----
     with ui.header().classes("bg-primary text-white"):
+        ui.button(icon="menu", on_click=lambda: drawer.toggle()).props("flat color=white")
         ui.label("📚 Audio‑Files Studio").classes("text-h5")
-        project_badge = ui.label("").classes("text-caption")
+        project_badge = ui.label("").classes("text-caption text-gold q-ml-auto")
+        dark_btn = ui.button(
+            icon="dark_mode" if not dark_mode else "light_mode", on_click=toggle_dark_mode
+        ).props("flat color=white")
 
-    with ui.left_drawer().classes("bg-blue-grey-1"):
+    # ---- Sidebar (dynamic background) ----
+    drawer = ui.left_drawer().classes("bg-blue-grey-1")
+    if dark_mode:
+        drawer.classes(remove="bg-blue-grey-1", add="bg-grey-9")
+    with drawer:
         with ui.column().classes("w-full p-4"):
             ui.label("Navigation").classes("text-h6 text-grey-8")
             ui.separator()
-            ui.button("Home", on_click=lambda: navigate("home")).props("flat align=left")
-            ui.button("Projects", on_click=lambda: navigate("projects")).props("flat align=left")
-            ui.button("Settings", on_click=lambda: navigate("settings")).props("flat align=left")
+            ui.button("Home", icon="home", on_click=lambda: navigate("home")).props(
+                "flat align=left"
+            )
+            ui.button("New Project", icon="add", on_click=lambda: navigate("wizard")).props(
+                "flat align=left color=primary"
+            )
+            ui.button("Projects", icon="folder", on_click=lambda: navigate("projects")).props(
+                "flat align=left"
+            )
+            ui.button("Settings", icon="settings", on_click=lambda: navigate("settings")).props(
+                "flat align=left"
+            )
             ui.separator()
 
-            pipeline_label = ui.label("Project Pipeline").classes("text-h6 text-grey-8 mt-4")
-            nav_setup = ui.button("1. Setup", on_click=lambda: navigate_pipeline("setup")).props(
-                "flat align=left"
-            )
+            pipeline_label = ui.label("Pipeline").classes("text-h6 text-grey-8 mt-4")
             nav_prepare = ui.button(
-                "2. Prepare", on_click=lambda: navigate_pipeline("prepare")
+                "1. Prepare", on_click=lambda: navigate_pipeline("prepare")
             ).props("flat align=left")
             nav_synthesize = ui.button(
-                "3. Synthesize", on_click=lambda: navigate_pipeline("synthesize")
+                "2. Synthesize", on_click=lambda: navigate_pipeline("synthesize")
             ).props("flat align=left")
             nav_finalize = ui.button(
-                "4. Finalize", on_click=lambda: navigate_pipeline("finalize")
+                "3. Finalize", on_click=lambda: navigate_pipeline("finalize")
             ).props("flat align=left")
-            nav_review = ui.button("5. Review", on_click=lambda: navigate_pipeline("review")).props(
-                "flat align=left"
-            )
 
-            for item in (
-                pipeline_label,
-                nav_setup,
-                nav_prepare,
-                nav_synthesize,
-                nav_finalize,
-                nav_review,
-            ):
+            for item in (pipeline_label, nav_prepare, nav_synthesize, nav_finalize):
                 item.bind_visibility_from(app.storage.general, "project_active")
 
             app.storage.general["project_active"] = False
 
-    main_content = ui.column().classes("w-full p-4")
+    # ---- Main content ----
+    notification_panel = ui.column().classes("w-full q-pa-md")
+    import bookforge.ui.components as comp
 
-    # ------------------------------------------------------------------
-    # Navigation functions (defined before creating views)
-    # ------------------------------------------------------------------
-    def navigate(view: str):
-        app.storage.general["current_view"] = view
-        for c in (
-            home_container,
-            projects_container,
-            settings_container,
-            setup_card,
-            prepare_card,
-            synthesize_card,
-            finalize_card,
-            review_card,
-        ):
-            c.visible = False
+    comp._notification_panel = notification_panel
+    with notification_panel:
+        ui.label("📢 Notifications").classes("text-subtitle1")
 
-        if view == "home":
-            home_container.visible = True
-        elif view == "projects":
-            projects_container.visible = True
-        elif view == "settings":
-            settings_container.visible = True
-        update_project_badge()
+    content = ui.column().classes("w-full p-4")
+
+    # ---- Navigation functions ----
+    def navigate(view_name: str):
+        content.clear()
+        with content:
+            if view_name == "home":
+                home.view(on_new_project=lambda: navigate("wizard"))
+            elif view_name == "projects":
+                projects.view()
+            elif view_name == "settings":
+                settings.view(on_dark_toggle=apply_dark_mode)
+            elif view_name == "wizard":
+                wizard.view(on_switch_to_pipeline=navigate_pipeline)
+            elif view_name == "pipeline":
+                try:
+                    pipeline.view(on_switch_to_projects=lambda: navigate("projects"))
+                except Exception as e:
+                    safe_notify(f"Pipeline error: {e}", type="negative")
+                    import traceback
+
+                    traceback.print_exc()
+                    ui.label(f"Pipeline failed to load. See notifications above.").classes(
+                        "text-negative"
+                    )
+            else:
+                ui.label("Unknown view")
+        state.set_current_view(view_name)
+        update_badge()
 
     def navigate_pipeline(step: str):
-        proc = get_processor()
-        if step != "setup" and proc is None:
-            safe_notify("No active project. Start a new one or resume an existing.", type="warning")
+        proc = state.get_processor()
+        if proc is None:
+            safe_notify("No active project. Start a new one.", type="warning")
             navigate("home")
             return
-
-        for c in (
-            home_container,
-            projects_container,
-            settings_container,
-            setup_card,
-            prepare_card,
-            synthesize_card,
-            finalize_card,
-            review_card,
-        ):
-            c.visible = False
-
-        if step == "setup":
-            setup_card.visible = True
-        elif step == "prepare":
-            prepare_card.visible = True
-        elif step == "synthesize":
-            synthesize_card.visible = True
-        elif step == "finalize":
-            finalize_card.visible = True
-        elif step == "review":
-            review_card.visible = True
-        else:
-            safe_notify(f"Unknown pipeline step: {step}", type="warning")
-            navigate("home")
-            return
-
+        state.set_pipeline_step(step)
         app.storage.general["project_active"] = True
-        update_project_badge()
+        navigate("pipeline")
 
-    def update_project_badge():
-        proc = get_processor()
+    def update_badge():
+        proc = state.get_processor()
         if proc:
             if proc.is_complete():
                 project_badge.set_text(f"Project: {proc.output_dir.name} (Completed)")
@@ -152,73 +185,38 @@ async def main_page():
         else:
             project_badge.set_text("")
 
-    def start_new_project():
-        set_processor(None)
-        app.storage.general["project_active"] = True
-        setup_card.reset_form()
-        navigate_pipeline("setup")
+    def clear_notifications():
+        comp._notifications.clear()
+        update_notification_panel()
 
-    # ------------------------------------------------------------------
-    # Create view containers inside main content
-    # ------------------------------------------------------------------
-    with main_content:
-        home_container = home.view(lambda: start_new_project(), lambda: navigate("projects"))
-        projects_container = projects.view()
-        settings_container = settings.view()
-        setup_card = setup.view()
-        prepare_card = prepare.view()
-        synthesize_card = synthesize.view()
-        finalize_card = finalize.view()
-        review_card = ui.column()
-
-        for c in (
-            home_container,
-            projects_container,
-            settings_container,
-            setup_card,
-            prepare_card,
-            synthesize_card,
-            finalize_card,
-            review_card,
-        ):
-            c.visible = False
-
-    # ------------------------------------------------------------------
-    # Define resume_project BEFORE assigning it to projects_container
-    # ------------------------------------------------------------------
+    # ---- Resume project (for projects view) ----
     async def resume_project(project_name: str):
         from bookforge.incremental_processor import IncrementalProcessor
         from bookforge.tts.factory import get_backend
 
         progress_file = Path("out") / project_name / "processing_progress.json"
         if not progress_file.exists():
-            safe_notify("No progress data found.", type="negative")
+            safe_notify("No progress data.", type="negative")
             return
-
         try:
             with progress_file.open("r") as f:
                 data = json.load(f)
         except OSError as e:
-            safe_notify(f"Failed to read progress file: {e}", type="negative")
+            safe_notify(f"Failed to read progress: {e}", type="negative")
             return
 
         backend_type = data.get("backend_name", "unknown")
-        if backend_type == "unknown" or backend_type is None:
+        if backend_type == "unknown":
             if data.get("speaker_wav"):
                 backend_type = "xtts"
             elif data.get("voice_model"):
                 backend_type = "piper"
             else:
-                safe_notify(
-                    "Old project – cannot detect backend. Start a new project.", type="warning"
-                )
+                safe_notify("Cannot detect backend.", type="warning")
                 return
 
-        voice_model_path = data.get("voice_model")
-        speaker_wav_path = data.get("speaker_wav")
-        voice_model = Path(voice_model_path) if voice_model_path else None
-        speaker_wav = Path(speaker_wav_path) if speaker_wav_path else None
-
+        voice_model = Path(data["voice_model"]) if data.get("voice_model") else None
+        speaker_wav = Path(data["speaker_wav"]) if data.get("speaker_wav") else None
         backend_params = data.get("backend_params", {})
 
         try:
@@ -230,56 +228,39 @@ async def main_page():
                 **backend_params,
             )
         except Exception as e:
-            safe_notify(f"Failed to recreate TTS backend: {e}", type="negative")
+            safe_notify(f"Failed to recreate backend: {e}", type="negative")
             return
 
-        try:
-            proc = IncrementalProcessor(
-                input_file=Path(data["input_file"]),
-                output_dir=Path("out") / project_name,
-                backend=tts_backend,
-                preset=data.get("preset", "calm_longform"),
-                chapter_strategy=data.get("chapter_strategy", "auto"),
-                chapter_min_confidence=float(data.get("chapter_min_confidence", 0.5)),
-                normalize=data.get("normalize", False),
-                target_lufs=float(data.get("target_lufs", -16.0)),
-                voice_model=voice_model,
-                speaker_wav=speaker_wav,
-                skip_failed=data.get("skip_failed", False),
-                backend_params=backend_params,
-            )
-            proc.backend_name = backend_type
-            await asyncio.to_thread(proc.prepare_text)
-            loaded = await asyncio.to_thread(proc.load_progress)
-            if not loaded:
-                safe_notify("No previous progress could be loaded.", type="warning")
-                return
-        except Exception as e:
-            safe_notify(f"Failed to resume: {e}", type="negative")
+        proc = IncrementalProcessor(
+            input_file=Path(data["input_file"]),
+            output_dir=Path("out") / project_name,
+            backend=tts_backend,
+            preset=data.get("preset", "calm_longform"),
+            chapter_strategy=data.get("chapter_strategy", "auto"),
+            chapter_min_confidence=float(data.get("chapter_min_confidence", 0.5)),
+            normalize=data.get("normalize", False),
+            target_lufs=float(data.get("target_lufs", -16.0)),
+            voice_model=voice_model,
+            speaker_wav=speaker_wav,
+            skip_failed=data.get("skip_failed", False),
+            backend_params=backend_params,
+        )
+        proc.backend_name = backend_type
+        await asyncio.to_thread(proc.prepare_text)
+        loaded = await asyncio.to_thread(proc.load_progress)
+        if not loaded:
+            safe_notify("No progress could be loaded.", type="warning")
             return
-
-        set_processor(proc)
+        state.set_processor(proc)
         app.storage.general["project_active"] = True
         update_progress_from_processor(proc)
         safe_notify(f"Resumed '{project_name}'", type="positive")
         navigate_pipeline("synthesize")
 
-    # ------------------------------------------------------------------
-    # Now assign resume_project to projects_container.on_resume
-    # ------------------------------------------------------------------
-    projects_container.on_resume = resume_project
+    # ---- Store resume callback ----
+    state.set_resume_callback(resume_project)
 
-    # ------------------------------------------------------------------
-    # Link switch callbacks (after containers exist)
-    # ------------------------------------------------------------------
-    setup_card.switch_to_prepare = lambda: navigate_pipeline("prepare")
-    prepare_card.switch_to_synthesize = lambda: navigate_pipeline("synthesize")
-    synthesize_card.switch_to_finalize = lambda: navigate_pipeline("finalize")
-    finalize_card.switch_to_projects = lambda: navigate("projects")
-
-    # ------------------------------------------------------------------
-    # Initial view – always start at home
-    # ------------------------------------------------------------------
+    # ---- Initial view ----
     navigate("home")
 
     ui.markdown("---")

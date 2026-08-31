@@ -1,193 +1,134 @@
-"""
-Reusable UI components and shared state helpers.
-"""
+# src/bookforge/ui/components.py
+"""Shared UI components and helpers."""
 
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+import time
 from typing import Any
 
-from nicegui import app, ui
+from nicegui import ui
 
-# ---------------------------------------------------------------------------
-# Notification area
-# ---------------------------------------------------------------------------
-_notification_container = None
+from bookforge.incremental_processor import IncrementalProcessor
+from bookforge.ui import state
 
-
-def init_notification_area():
-    global _notification_container
-    with ui.column().classes("w-full") as _notification_container:
-        pass
+# ---- Notification storage ----
+_notifications: list[dict] = []  # each dict: {"message": str, "type": str, "timestamp": float}
+_notification_panel: ui.column | None = None
 
 
-def safe_notify(msg: str, type: str = "positive"):
-    if _notification_container is None:
-        ui.notify(msg, type=type, timeout=5)
-    else:
-        with _notification_container:
-            ui.notify(msg, type=type, timeout=5)
+def add_notification(message: str, type: str = "info") -> None:
+    """Add a notification to the persistent list and update the panel."""
+    _notifications.append({"message": message, "type": type, "timestamp": time.time()})
+    if len(_notifications) > 20:
+        _notifications.pop(0)
+    update_notification_panel()
 
 
-# ---------------------------------------------------------------------------
-# Processor state (persisted as JSON‑safe dict, not the object)
-# ---------------------------------------------------------------------------
-_processor_cache = None
-
-
-def get_processor():
-    """Return the active processor, reconstructing it from saved state if needed."""
-    global _processor_cache
-    if _processor_cache is not None:
-        return _processor_cache
-
-    state = app.storage.general.get("processor_state")
-    if not state:
-        return None
-
-    # Reconstruct from persisted state
-    from bookforge.incremental_processor import IncrementalProcessor
-    from bookforge.tts.factory import get_backend
-
-    backend_type = state.get("backend_type", "piper")
-    voice_model = Path(state["voice_model"]) if state.get("voice_model") else None
-    speaker_wav = Path(state["speaker_wav"]) if state.get("speaker_wav") else None
-
-    try:
-        tts_backend = get_backend(
-            backend_type=backend_type,
-            voice_model=voice_model,
-            speaker_wav=speaker_wav,
-        )
-    except Exception:
-        # Backend may not be available (e.g., missing model) – return None
-        return None
-
-    try:
-        proc = IncrementalProcessor(
-            input_file=Path(state["input_file"]),
-            output_dir=Path(state["output_dir"]),
-            backend=tts_backend,
-            preset=state.get("preset", "calm_longform"),
-            chapter_strategy=state.get("chapter_strategy", "auto"),
-            chapter_min_confidence=float(state.get("chapter_min_confidence", 0.5)),
-            normalize=state.get("normalize", False),
-            target_lufs=float(state.get("target_lufs", -16.0)),
-            voice_model=voice_model,
-            speaker_wav=speaker_wav,
-        )
-        proc.backend_name = backend_type
-        # If there's saved progress, load it
-        if (proc.output_dir / "processing_progress.json").exists():
-            proc.prepare_text()
-            proc.load_progress()
-        _processor_cache = proc
-        return proc
-    except Exception:
-        return None
-
-
-def set_processor(p):
-    """Store the processor in cache and persist only serializable state."""
-    global _processor_cache
-    _processor_cache = p
-
-    if p is None:
-        app.storage.general["processor_state"] = None
+def update_notification_panel() -> None:
+    """Refresh the persistent notification panel."""
+    if _notification_panel is None:
         return
+    _notification_panel.clear()
+    with _notification_panel:
+        ui.label("📢 Notifications").classes("text-subtitle1")
+        for notif in _notifications[-5:]:  # Show last 5
+            color = {
+                "positive": "text-positive",
+                "negative": "text-negative",
+                "warning": "text-warning",
+                "info": "text-primary",
+            }.get(notif["type"], "text-grey")
+            ui.label(f"[{notif['type'].upper()}] {notif['message']}").classes(
+                f"text-caption {color}"
+            )
 
-    app.storage.general["processor_state"] = {
-        "input_file": str(p.input_file),
-        "output_dir": str(p.output_dir),
-        "backend_type": getattr(p, "backend_name", "piper"),
-        "voice_model": str(p.voice_model) if p.voice_model else None,
-        "speaker_wav": str(p.speaker_wav) if p.speaker_wav else None,
-        "preset": p.preset,
-        "chapter_strategy": p.chapter_strategy,
-        "chapter_min_confidence": p.chapter_min_confidence,
-        "normalize": p.normalize,
-        "target_lufs": p.target_lufs,
+
+def safe_notify(message: str, type: str = "info") -> None:
+    """Show a toast and add to persistent panel."""
+    add_notification(message, type)
+    if type == "positive":
+        ui.notify(message, type="positive", position="top-right")
+    elif type == "negative":
+        ui.notify(message, type="negative", position="top-right")
+    elif type == "warning":
+        ui.notify(message, type="warning", position="top-right")
+    else:
+        ui.notify(message, type="info", position="top-right")
+
+
+def init_notification_area() -> None:
+    """Initialize the notification area – called once at startup."""
+    # The panel is created in main.py; we just need to ensure the reference is set.
+    pass
+
+
+# ---- Processor helpers ----
+def get_processor() -> IncrementalProcessor | None:
+    return state.get_processor()
+
+
+def set_processor(proc: IncrementalProcessor | None) -> None:
+    state.set_processor(proc)
+
+
+# ---- Progress helpers ----
+def get_progress_dict() -> dict[str, Any]:
+    proc = get_processor()
+    if proc is None:
+        return {
+            "active": False,
+            "overall_progress": 0.0,
+            "chapter_progress": 0.0,
+            "status_message": "No active project.",
+            "chapter_statuses_html": "",
+        }
+    progress = proc.get_progress()
+    # Build HTML for chapter statuses
+    statuses = proc.chapter_statuses
+    html = "<ul>"
+    for s in statuses:
+        icon = "✅" if s["processed"] else "⏳" if s["error"] else "⬜"
+        html += f"<li>Chapter {s['index']}: {icon} {s['chunks_done']}/{s['chunks_total']}</li>"
+    html += "</ul>"
+    return {
+        "active": False,  # will be set by the processing loop
+        "overall_progress": progress.overall_progress,
+        "chapter_progress": progress.chapter_progress,
+        "status_message": progress.status_message,
+        "chapter_statuses_html": html,
     }
 
 
-# ---------------------------------------------------------------------------
-# Progress dictionary helpers
-# ---------------------------------------------------------------------------
-def get_progress_dict() -> dict:
-    return app.storage.general.get(
-        "progress",
-        {
-            "overall_progress": 0.0,
-            "chapter_progress": 0.0,
-            "status_message": "Idle",
-            "estimated_time_remaining": "",
-            "chapter_statuses_html": "",
-            "active": False,
-        },
-    )
+def set_progress_dict(data: dict[str, Any]) -> None:
+    # This is used to store processing state; we'll use a global variable.
+    # For simplicity, we'll store in app.storage.
+    state.set_state("progress", data)
 
 
-def set_progress_dict(d: dict):
-    app.storage.general["progress"] = d
-
-
-def update_progress_from_processor(proc):
+def update_progress_from_processor(proc: IncrementalProcessor) -> None:
     progress = proc.get_progress()
-    html_parts = ['<div style="display:flex; flex-wrap:wrap; gap:8px;">']
-    for ch in proc.chapter_statuses:
-        badge = "⚪"
-        if ch["error"]:
-            badge = "🔴"
-        elif ch["processed"]:
-            badge = "🟢"
-        else:
-            badge = "🔵" if ch["chunks_done"] > 0 else "⚪"
-        status_text = f"{badge} Ch{ch['index']}"
-        if ch["error"]:
-            status_text += " ❌"
-        html_parts.append(
-            f'<span style="padding:4px 8px; border:1px solid #ccc; border-radius:4px; font-size:0.85rem;">{status_text}</span>'
-        )
-    html_parts.append("</div>")
     set_progress_dict(
         {
             "overall_progress": progress.overall_progress,
             "chapter_progress": progress.chapter_progress,
-            "status_message": f"{progress.status_message} (ETA: {progress.estimated_time_remaining})",
-            "estimated_time_remaining": progress.estimated_time_remaining,
-            "chapter_statuses_html": "".join(html_parts),
+            "status_message": progress.status_message,
+            "active": True,
+            "chapter_statuses_html": "",
         }
     )
+    # Also update the notification panel with status if needed
+    safe_notify(progress.status_message, type="info")
 
 
-# ---------------------------------------------------------------------------
-# Upload helper
-# ---------------------------------------------------------------------------
-async def extract_upload_bytes(e) -> tuple[bytes, str]:
-    source = None
-    if hasattr(e, "file") and e.file is not None:
-        source = e.file
-    elif hasattr(e, "files") and e.files:
-        source = e.files[0]
-    if source is None:
-        raise AttributeError("Upload event has no file data.")
-    if hasattr(source, "data") and source.data is not None:
-        data = source.data
-        if isinstance(data, bytes):
-            return data, getattr(source, "name", "uploaded_file")
-        if asyncio.iscoroutine(data):
-            result = await data
-            if isinstance(result, bytes):
-                return result, getattr(source, "name", "uploaded_file")
-            if hasattr(result, "read"):
-                return result.read(), getattr(source, "name", "uploaded_file")
-    if hasattr(source, "content") and source.content is not None:
-        return source.content.read(), getattr(source, "name", "uploaded_file")
-    if hasattr(source, "read"):
-        val = source.read()
-        if asyncio.iscoroutine(val):
-            val = await val
-        if isinstance(val, bytes):
-            return val, getattr(source, "name", "uploaded_file")
-    raise AttributeError(f"Cannot extract bytes from {type(source).__name__}")
+# ---- File upload helpers ----
+async def extract_upload_bytes(upload_event) -> tuple[bytes, str]:
+    """Extract bytes and filename from a NiceGUI upload event."""
+    if hasattr(upload_event, "file"):
+        # For files uploaded via ui.upload
+        content = await upload_event.file.read()
+        name = getattr(upload_event.file, "name", "uploaded_file")
+        return content, name
+    else:
+        # Fallback
+        return b"", "unknown"
