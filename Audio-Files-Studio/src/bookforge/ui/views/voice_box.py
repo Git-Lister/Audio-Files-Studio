@@ -3,8 +3,7 @@
 
 from __future__ import annotations
 
-import asyncio
-import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from nicegui import ui
@@ -19,83 +18,81 @@ def view():
         ui.label("📦 Voice Box (Gallery)").classes("text-h5 q-mb-md")
         ui.markdown("Browse your saved voices. Click **Edit** to open the Vocalizer and fine‑tune.")
 
-        # Search bar
-        search_input = ui.input(label="Search voices", placeholder="Filter by name or tags...") \
-            .props('outlined').classes("w-full q-mb-md")
-        # Refresh button
-        refresh_btn = ui.button(icon="refresh", on_click=lambda: refresh()) \
-            .props("flat").classes("q-ml-sm")
+        search_input = (
+            ui.input(label="Search voices", placeholder="Filter by name or tags...")
+            .props("outlined")
+            .classes("w-full q-mb-md")
+        )
+        ui.button(icon="refresh", on_click=lambda: refresh()).props("flat").classes("q-ml-sm")
 
-        # Grid of voice cards
         grid = ui.column().classes("w-full items-stretch gap-4")
 
         def refresh():
             grid.clear()
             with grid:
                 voices = lib.list_voices(system=None)
-                # Filter by search term
-                search_term = search_input.value.strip().lower()
+                search_term = search_input.value.strip().lower() if search_input.value else ""
                 if search_term:
-                    voices = [v for v in voices if search_term in v['name'].lower() or
-                              (v.get('tags', '') and search_term in v['tags'].lower())]
+                    voices = [
+                        v
+                        for v in voices
+                        if search_term in v["name"].lower()
+                        or (v.get("tags", "") and search_term in v["tags"].lower())
+                    ]
                 if not voices:
                     ui.label("No voices found.").classes("text-grey")
                     return
-                # Display as cards (responsive grid)
                 with ui.row().classes("w-full items-stretch gap-4"):
                     for voice in voices:
                         with ui.card().classes("col-12 col-sm-6 col-md-4"):
                             with ui.row().classes("items-center justify-between w-full"):
-                                ui.label(voice['name']).classes("text-h6")
-                                if voice['is_system']:
+                                ui.label(voice["name"]).classes("text-h6")
+                                if voice["is_system"]:
                                     ui.label("built‑in").classes("text-caption text-grey")
-                            if voice.get('tags'):
-                                ui.label(voice['tags']).classes("text-caption text-grey")
-                            # Actions row
+                            if voice.get("tags"):
+                                ui.label(voice["tags"]).classes("text-caption text-grey")
                             with ui.row().classes("items-center gap-2 q-mt-sm"):
-                                # Play button (generates preview on demand)
-                                play_btn = ui.button(icon="play_arrow", on_click=lambda v=voice: play_voice(v)) \
-                                    .props("flat size=sm")
-                                ui.button(icon="edit", on_click=lambda v=voice: edit_voice(v['id'])) \
-                                    .props("flat size=sm")
-                                if not voice['is_system']:
-                                    ui.button(icon="delete", on_click=lambda v=voice: delete_voice(v)) \
-                                        .props("flat color=negative size=sm")
-                                    ui.button(icon="archive", on_click=lambda v=voice: export_voice(v)) \
-                                        .props("flat size=sm")
-                            # Audio player for preview (hidden initially)
+                                play_btn = ui.button(
+                                    icon="play_arrow", on_click=lambda v=voice: play_voice(v)
+                                ).props("flat size=sm")
+                                ui.button(
+                                    icon="edit", on_click=lambda v=voice: edit_voice(v["id"])
+                                ).props("flat size=sm")
+                                if not voice["is_system"]:
+                                    ui.button(
+                                        icon="delete", on_click=lambda v=voice: delete_voice(v)
+                                    ).props("flat color=negative size=sm")
+                                    ui.button(
+                                        icon="archive", on_click=lambda v=voice: export_voice(v)
+                                    ).props("flat size=sm")
                             audio = ui.audio("").classes("hidden w-full q-mt-sm")
-                            # Store reference so we can update it
-                            setattr(play_btn, '_audio', audio)
-                            setattr(play_btn, '_voice', voice)
+                            setattr(play_btn, "_audio", audio)
+                            setattr(play_btn, "_voice", voice)
 
-            # Also add an import button at the top
             with ui.row().classes("q-mb-md"):
-                ui.button("Import Voice", icon="file_upload", on_click=import_voice) \
-                    .props("flat color=primary")
+                ui.button("Import Voice", icon="file_upload", on_click=import_voice).props(
+                    "flat color=primary"
+                )
 
         async def play_voice(voice):
-            # Generate preview audio using the voice's parameters and preview_text
             from bookforge.ui.views.vocalizer import generate_preview
-            # Find the audio element associated with this button
-            # We stored it as a custom attribute
-            audio = getattr(voice, '_audio', None)
+
+            audio = getattr(voice, "_audio", None)
             if audio is None:
                 safe_notify("Playback not available for this voice.", type="warning")
                 return
-            # Generate preview
             try:
                 wav_path = await generate_preview(
-                    text=voice.get('preview_text', 'This is a sample of my voice. It is clear, natural, and ready for narration.'),
+                    text=voice.get("preview_text", DEFAULT_PREVIEW_TEXT),
                     params={
-                        'temperature': voice['temperature'],
-                        'length_penalty': voice['length_penalty'],
-                        'repetition_penalty': voice['repetition_penalty'],
-                        'top_p': voice['top_p'],
-                        'top_k': voice['top_k'],
-                        'language': voice.get('language', 'en'),
-                        'reference_wav': voice.get('reference_wav_path'),
-                    }
+                        "temperature": voice["temperature"],
+                        "length_penalty": voice["length_penalty"],
+                        "repetition_penalty": voice["repetition_penalty"],
+                        "top_p": voice["top_p"],
+                        "top_k": voice["top_k"],
+                        "language": voice.get("language", "en"),
+                        "reference_wav": voice.get("reference_wav_path"),
+                    },
                 )
                 audio.set_source(str(wav_path))
                 audio.classes(remove="hidden")
@@ -104,14 +101,10 @@ def view():
                 safe_notify(f"Preview generation failed: {e}", type="negative")
 
         def edit_voice(voice_id):
-            # Navigate to Vocalizer with voice_id as query param
-            # We'll use a state variable in main.py; for now, just navigate to "vocalizer" and set state
-            # We'll handle in main.py: when navigating to "vocalizer", read from url or state.
-            # For simplicity, we'll set a global state.
             from nicegui import app
-            app.storage.general['edit_voice_id'] = voice_id
-            # Trigger navigation (will be handled by main.py)
-            if hasattr(container, 'switch_to_vocalizer'):
+
+            app.storage.general["edit_voice_id"] = voice_id
+            if hasattr(container, "switch_to_vocalizer") and container.switch_to_vocalizer:
                 container.switch_to_vocalizer()
             else:
                 safe_notify("Navigation not configured.", type="warning")
@@ -122,12 +115,13 @@ def view():
                 ui.label("This action cannot be undone.")
                 with ui.row().classes("items-center gap-4"):
                     ui.button("Cancel", on_click=dialog.close).props("flat")
-                    ui.button("Delete", on_click=lambda: confirm_delete(voice, dialog)) \
-                        .props("color=negative")
+                    ui.button("Delete", on_click=lambda: confirm_delete(voice, dialog)).props(
+                        "color=negative"
+                    )
             dialog.open()
 
         def confirm_delete(voice, dialog):
-            if lib.delete_voice(voice['id']):
+            if lib.delete_voice(voice["id"]):
                 safe_notify(f"Deleted '{voice['name']}'", type="positive")
                 dialog.close()
                 refresh()
@@ -135,30 +129,30 @@ def view():
                 safe_notify("Failed to delete voice.", type="negative")
 
         async def export_voice(voice):
-            # Ask for download location? For simplicity, export to downloads folder.
             download_path = Path.home() / "Downloads" / f"{voice['name']}.voice.zip"
             try:
-                lib.export_voice(voice['id'], download_path)
+                lib.export_voice(voice["id"], download_path)
                 safe_notify(f"Exported to {download_path}", type="positive")
             except Exception as e:
                 safe_notify(f"Export failed: {e}", type="negative")
 
         async def import_voice():
-            # Open file picker
             with ui.dialog() as dialog, ui.card():
                 ui.label("Import Voice").classes("text-h6")
                 ui.markdown("Select a `.voice.zip` file exported from another instance.")
-                ui.upload(label="Upload .zip file", on_upload=lambda e: handle_import(e, dialog)) \
-                    .props("accept=.zip")
+                ui.upload(
+                    label="Upload .zip file", on_upload=lambda e: handle_import(e, dialog)
+                ).props("accept=.zip")
                 ui.button("Cancel", on_click=dialog.close).props("flat")
             dialog.open()
 
         def handle_import(e, dialog):
             try:
-                # Save uploaded zip to temp
-                temp_zip = Path("temp") / f"import_{int(datetime.now().timestamp())}.zip"
+                temp_zip = (
+                    Path("temp") / f"import_{int(datetime.now(timezone.utc).timestamp())}.zip"
+                )
                 temp_zip.parent.mkdir(exist_ok=True)
-                with open(temp_zip, 'wb') as f:
+                with open(temp_zip, "wb") as f:
                     f.write(e.file.read())
                 new_id = lib.import_voice(temp_zip)
                 safe_notify(f"Imported voice with ID {new_id}", type="positive")
@@ -169,11 +163,12 @@ def view():
 
         # Initial load
         refresh()
-
-        # Search on input change
         search_input.on_value_change(lambda: refresh())
-
-        # Container for switch callback (set by main.py)
         container.switch_to_vocalizer = None
 
     return container
+
+
+DEFAULT_PREVIEW_TEXT = (
+    "This is a sample of my voice. It is clear, natural, and ready for narration."
+)

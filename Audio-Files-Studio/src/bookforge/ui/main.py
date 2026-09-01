@@ -150,6 +150,10 @@ async def main_page():
                 home.view(on_new_project=lambda: navigate("wizard"))
             elif view_name == "projects":
                 projects.view()
+            elif view_name == "voice_box":
+                voice_box.view()
+            elif view_name == "vocalizer":
+                vocalizer.view()
             elif view_name == "settings":
                 settings.view(on_dark_toggle=apply_dark_mode)
             elif view_name == "wizard":

@@ -1,274 +1,368 @@
-# src/bookforge/ui/main.py
-"""Audio‑Files Studio – main UI with single content container."""
+# src/bookforge/ui/views/vocalizer.py
+"""Vocalizer – voice editor with sliders, preview, and waveform."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
+import struct
+import uuid
+import wave
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
-from nicegui import app, ui
+from nicegui import ui
 
-from bookforge.ui import state
-from bookforge.ui.components import (
-    init_notification_area,
-    safe_notify,
-    update_notification_panel,
-    update_progress_from_processor,
-)
-from bookforge.ui.views import (
-    home,
-    pipeline,
-    projects,
-    settings,
-    vocalizer,
-    voice_box,
-    wizard,
-)
+from bookforge.ui import voice_library as lib
+from bookforge.ui.components import safe_notify
 
-os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+DEFAULT_PREVIEW = "This is a sample of my voice. It is clear, natural, and ready for narration."
+POETIC_PREVIEW = "In th’ olde dayes of the King Arthour, Of which that Britons speken greet honour, All was this land fulfild of fayerye."
+SCIENTIFIC_PREVIEW = "The quantum entanglement of the phonon field underlies the emergent properties of the vocal tract's resonance, which we model as a coupled oscillator system."
 
 
-@ui.page("/")
-async def main_page():
-    ui.add_head_html("""
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-        .bg-primary { background-color: #1a1a2e !important; }
-        .bg-secondary { background-color: #0f3460 !important; }
-        .bg-accent { background-color: #c9a959 !important; }
-        .text-primary { color: #1a1a2e !important; }
-        .text-secondary { color: #0f3460 !important; }
-        .text-accent { color: #c9a959 !important; }
-        .text-gold { color: #c9a959 !important; }
-        .border-gold { border: 1px solid #c9a959 !important; }
-        .shadow-gold { box-shadow: 0 4px 12px rgba(201, 169, 89, 0.2) !important; }
-        .btn-gold { background-color: #c9a959 !important; color: #1a1a2e !important; }
-        .btn-gold:hover { background-color: #b8963e !important; }
-        .q-card { border-radius: 12px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important; }
-        .dark .text-grey-8 { color: #c0c0c0 !important; }
-        .dark .text-grey-6 { color: #a0a0a0 !important; }
-    </style>
-    """)
+def view():
+    container = ui.column().classes("w-full")
 
-    init_notification_area()
+    # ---- State ----
+    voice_id = None
+    uploaded_ref_path: Optional[Path] = None
 
-    # Init state
-    state.set_processor(None)
-    state.set_current_view("home")
-    state.set_pipeline_step(None)
+    # ---- UI controls (populated later) ----
+    name_input = None
+    desc_input = None
+    tags_input = None
+    preview_textarea = None
+    temp_slider = length_slider = repeat_slider = None
+    pitch_slider = rate_slider = top_p_slider = top_k_slider = None
+    normalize_check = None
+    ref_status = None
+    generate_btn = None
+    preview_spinner = None
+    audio_player = None
 
-    # ---- Dark mode management ----
-    def apply_dark_mode(enabled: bool):
-        state.set_dark_mode(enabled)
-        ui.dark_mode(enabled)
-        if enabled:
-            drawer.classes(remove="bg-blue-grey-1", add="bg-grey-9")
-            dark_btn.icon = "light_mode"
+    # ---- Helper functions (defined before UI) ----
+    def set_preview_text(text):
+        if preview_textarea is not None:
+            preview_textarea.value = text
+
+    def set_sliders_from_voice(voice):
+        temp_slider.value = voice.get("temperature", 0.667)
+        length_slider.value = voice.get("length_penalty", 1.0)
+        repeat_slider.value = voice.get("repetition_penalty", 5.0)
+        top_p_slider.value = voice.get("top_p", 0.8)
+        top_k_slider.value = voice.get("top_k", 50)
+        pitch_slider.value = voice.get("pitch", 0.0)
+        rate_slider.value = voice.get("rate", 1.0)
+        normalize_check.value = bool(voice.get("normalize", False))
+        name_input.value = voice.get("name", "My Voice")
+        desc_input.value = voice.get("description", "")
+        tags_input.value = voice.get("tags", "")
+        preview_textarea.value = voice.get("preview_text", DEFAULT_PREVIEW)
+        ref_path = voice.get("reference_wav_path")
+        if ref_path and Path(ref_path).exists():
+            ref_status.set_text(f"Reference: {Path(ref_path).name}")
         else:
-            drawer.classes(remove="bg-grey-9", add="bg-blue-grey-1")
-            dark_btn.icon = "dark_mode"
-        update_notification_panel()
-        if hasattr(state, "_settings_dark_toggle") and state._settings_dark_toggle is not None:
-            state._settings_dark_toggle.value = enabled
+            ref_status.set_text("No reference uploaded")
 
-    def toggle_dark_mode():
-        new_mode = not state.get_dark_mode()
-        apply_dark_mode(new_mode)
+    def get_current_params():
+        return {
+            "temperature": temp_slider.value,
+            "length_penalty": length_slider.value,
+            "repetition_penalty": repeat_slider.value,
+            "top_p": top_p_slider.value,
+            "top_k": int(top_k_slider.value or 0),
+            "pitch": pitch_slider.value,
+            "rate": rate_slider.value,
+            "normalize": normalize_check.value,
+            "language": "en",
+            "preset_name": "calm_longform",
+        }
 
-    dark_mode = state.get_dark_mode()
-    ui.dark_mode(dark_mode)
-
-    # ---- Header ----
-    with ui.header().classes("bg-primary text-white"):
-        ui.button(icon="menu", on_click=lambda: drawer.toggle()).props("flat color=white")
-        ui.label("📚 Audio‑Files Studio").classes("text-h5")
-        project_badge = ui.label("").classes("text-caption text-gold q-ml-auto")
-        dark_btn = ui.button(
-            icon="dark_mode" if not dark_mode else "light_mode",
-            on_click=toggle_dark_mode,
-        ).props("flat color=white")
-
-    # ---- Sidebar (dynamic background) ----
-    drawer = ui.left_drawer().classes("bg-blue-grey-1")
-    if dark_mode:
-        drawer.classes(remove="bg-blue-grey-1", add="bg-grey-9")
-    with drawer:
-        with ui.column().classes("w-full p-4"):
-            ui.label("Navigation").classes("text-h6 text-grey-8")
-            ui.separator()
-            ui.button("Home", icon="home", on_click=lambda: navigate("home")).props("flat align=left")
-            ui.button("New Project", icon="add", on_click=lambda: navigate("wizard")).props("flat align=left color=primary")
-            ui.button("Projects", icon="folder", on_click=lambda: navigate("projects")).props("flat align=left")
-            ui.button("Voice Box (Gallery)", icon="library_books", on_click=lambda: navigate("voice_box")).props("flat align=left")
-            ui.button("Vocalizer (Creator)", icon="edit", on_click=lambda: navigate("vocalizer")).props("flat align=left")
-            ui.button("Settings", icon="settings", on_click=lambda: navigate("settings")).props("flat align=left")
-            ui.separator()
-
-            pipeline_label = ui.label("Pipeline").classes("text-h6 text-grey-8 mt-4")
-            nav_prepare = ui.button("1. Prepare", on_click=lambda: navigate_pipeline("prepare")).props("flat align=left")
-            nav_synthesize = ui.button("2. Synthesize", on_click=lambda: navigate_pipeline("synthesize")).props("flat align=left")
-            nav_finalize = ui.button("3. Finalize", on_click=lambda: navigate_pipeline("finalize")).props("flat align=left")
-
-            for item in (pipeline_label, nav_prepare, nav_synthesize, nav_finalize):
-                item.bind_visibility_from(app.storage.general, "project_active")
-
-            app.storage.general["project_active"] = False
-
-    # ---- Main content ----
-    # Notification panel
-    notification_panel = ui.column().classes("w-full q-pa-md")
-    import bookforge.ui.components as comp
-
-    comp._notification_panel = notification_panel
-    with notification_panel:
-        ui.label("📢 Notifications").classes("text-subtitle1")
-
-    # Single content container – we'll rebuild it on navigation
-    content = ui.column().classes("w-full p-4")
-
-    # ---- Navigation functions ----
-    def navigate(view_name: str):
-        # Clear and rebuild the content based on the view
-        content.clear()
-        with content:
-            if view_name == "home":
-                home.view(on_new_project=lambda: navigate("wizard"))
-            elif view_name == "projects":
-                projects.view()
-            elif view_name == "settings":
-                settings.view(on_dark_toggle=apply_dark_mode)
-            elif view_name == "wizard":
-                wizard.view(on_switch_to_pipeline=navigate_pipeline)
-            elif view_name == "pipeline":
-                try:
-                    pipeline.view(on_switch_to_projects=lambda: navigate("projects"))
-                except Exception as e:
-                    safe_notify(f"Pipeline error: {e}", type="negative")
-                    import traceback
-                    traceback.print_exc()
-                    ui.label(f"Pipeline failed to load. See notifications above.").classes("text-negative")
-            elif view_name == "voice_box":
-                # Show Voice Box (Gallery)
-                voice_box.view()
-            elif view_name == "vocalizer":
-                # Show Vocalizer (Editor)
-                vocalizer.view()
-            else:
-                ui.label("Unknown view")
-        state.set_current_view(view_name)
-        update_badge()
-
-    def navigate_pipeline(step: str):
-        proc = state.get_processor()
-        if proc is None:
-            safe_notify("No active project. Start a new one.", type="warning")
-            navigate("home")
-            return
-        state.set_pipeline_step(step)
-        app.storage.general["project_active"] = True
-        navigate("pipeline")
-
-    def update_badge():
-        proc = state.get_processor()
-        if proc:
-            if proc.is_complete():
-                project_badge.set_text(f"Project: {proc.output_dir.name} (Completed)")
-            else:
-                progress = proc.get_progress()
-                project_badge.set_text(f"Project: {proc.output_dir.name} – {progress.status_message}")
+    def reset_to_loaded():
+        if voice_id:
+            voice = lib.get_voice(voice_id)
+            if voice:
+                set_sliders_from_voice(voice)
+                safe_notify("Reset to loaded voice parameters.", type="info")
         else:
-            project_badge.set_text("")
+            safe_notify("No voice loaded.", type="warning")
 
-    def clear_notifications():
-        comp._notifications.clear()
-        update_notification_panel()
+    def reset_to_system_defaults():
+        default_voice = {
+            "temperature": 0.667,
+            "length_penalty": 1.0,
+            "repetition_penalty": 5.0,
+            "top_p": 0.8,
+            "top_k": 50,
+            "pitch": 0.0,
+            "rate": 1.0,
+            "normalize": False,
+        }
+        set_sliders_from_voice(default_voice)
+        safe_notify("Reset to system defaults.", type="info")
 
-    # ---- Resume project (for projects view) ----
-    async def resume_project(project_name: str):
-        from bookforge.incremental_processor import IncrementalProcessor
-        from bookforge.tts.factory import get_backend
-
-        progress_file = Path("out") / project_name / "processing_progress.json"
-        if not progress_file.exists():
-            safe_notify("No progress data.", type="negative")
-            return
+    async def generate_preview_action():
+        preview_spinner.visible = True
+        generate_btn.disable()
         try:
-            with progress_file.open("r") as f:
-                data = json.load(f)
-        except OSError as e:
-            safe_notify(f"Failed to read progress: {e}", type="negative")
-            return
-
-        backend_type = data.get("backend_name", "unknown")
-        if backend_type == "unknown":
-            if data.get("speaker_wav"):
-                backend_type = "xtts"
-            elif data.get("voice_model"):
-                backend_type = "piper"
-            else:
-                safe_notify("Cannot detect backend.", type="warning")
-                return
-
-        voice_model = Path(data["voice_model"]) if data.get("voice_model") else None
-        speaker_wav = Path(data["speaker_wav"]) if data.get("speaker_wav") else None
-        backend_params = data.get("backend_params", {})
-
-        try:
-            tts_backend = await asyncio.to_thread(
-                get_backend,
-                backend_type=backend_type,
-                voice_model=voice_model,
-                speaker_wav=speaker_wav,
-                **backend_params,
-            )
+            text = preview_textarea.value or DEFAULT_PREVIEW
+            params = get_current_params()
+            # Use uploaded if available, else saved voice reference
+            ref_path_to_use = uploaded_ref_path
+            if ref_path_to_use is None and voice_id:
+                voice = lib.get_voice(voice_id)
+                if voice and voice.get("reference_wav_path"):
+                    ref_path_to_use = Path(voice["reference_wav_path"])
+            # Debug: print the path
+            print(f"🔊 Using reference WAV: {ref_path_to_use}")
+            wav_path = await generate_preview(text, params, ref_path_to_use)
+            audio_player.set_source(str(wav_path))
+            draw_waveform(wav_path)
+            safe_notify("Preview generated!", type="positive")
         except Exception as e:
-            safe_notify(f"Failed to recreate backend: {e}", type="negative")
-            return
+            safe_notify(f"Generation failed: {e}", type="negative")
+        finally:
+            preview_spinner.visible = False
+            generate_btn.enable()
 
-        proc = IncrementalProcessor(
-            input_file=Path(data["input_file"]),
-            output_dir=Path("out") / project_name,
-            backend=tts_backend,
-            preset=data.get("preset", "calm_longform"),
-            chapter_strategy=data.get("chapter_strategy", "auto"),
-            chapter_min_confidence=float(data.get("chapter_min_confidence", 0.5)),
-            normalize=data.get("normalize", False),
-            target_lufs=float(data.get("target_lufs", -16.0)),
-            voice_model=voice_model,
-            speaker_wav=speaker_wav,
-            skip_failed=data.get("skip_failed", False),
-            backend_params=backend_params,
+    def draw_waveform(wav_path):
+        try:
+            with wave.open(str(wav_path), "rb") as wav:
+                nchannels, sampwidth, nframes, _, _, _ = wav.getparams()
+                frames = wav.readframes(nframes)
+                if sampwidth == 2:
+                    samples = struct.unpack(f"{nframes * nchannels}h", frames)
+                else:
+                    samples = [0] * nframes
+                if nchannels == 2:
+                    samples = samples[::2]
+                max_points = 600
+                step = max(1, len(samples) // max_points)
+                downsampled = samples[::step]
+                max_val = max(abs(min(downsampled)), abs(max(downsampled)))
+                normalized = (
+                    [v / max_val for v in downsampled] if max_val > 0 else [0] * len(downsampled)
+                )
+                js = f"""
+                var canvas = document.getElementById('waveformCanvas');
+                if (!canvas) return;
+                var ctx = canvas.getContext('2d');
+                var w = canvas.width;
+                var h = canvas.height;
+                ctx.clearRect(0, 0, w, h);
+                ctx.strokeStyle = '#4CAF50';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                var data = {normalized};
+                var mid = h/2;
+                var step = w / data.length;
+                for (var i = 0; i < data.length; i++) {{
+                    var x = i * step;
+                    var y = mid - data[i] * mid;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                }}
+                ctx.stroke();
+                """
+                ui.run_javascript(js)
+        except Exception:
+            ui.run_javascript("""
+            var canvas = document.getElementById('waveformCanvas');
+            if (!canvas) return;
+            var ctx = canvas.getContext('2d');
+            var w = canvas.width;
+            var h = canvas.height;
+            ctx.clearRect(0, 0, w, h);
+            ctx.strokeStyle = '#4CAF50';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            var mid = h/2;
+            for (var i = 0; i < 600; i++) {
+                var x = i * (w / 600);
+                var y = mid - Math.sin(i * 0.1) * mid * 0.8;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+            """)
+
+    async def save_voice():
+        data = {
+            "name": (name_input.value or "").strip() or "Unnamed Voice",
+            "description": desc_input.value or "",
+            "tags": tags_input.value or "",
+            "preview_text": preview_textarea.value or DEFAULT_PREVIEW,
+            **get_current_params(),
+            "reference_wav_path": str(uploaded_ref_path) if uploaded_ref_path else None,
+        }
+        if voice_id:
+            lib.update_voice(voice_id, data)
+            safe_notify(f"Voice '{data['name']}' updated!", type="positive")
+        else:
+            new_id = lib.add_voice(data)
+            safe_notify(f"Voice '{data['name']}' created!", type="positive")
+        navigate_back()
+
+    def navigate_back():
+        if hasattr(container, "switch_to_gallery") and container.switch_to_gallery:
+            container.switch_to_gallery()
+        else:
+            safe_notify("Return to Gallery not configured.", type="warning")
+
+    # ---- Upload handler (async) ----
+    async def handle_upload(e):
+        nonlocal uploaded_ref_path
+        temp_dir = Path("temp")
+        temp_dir.mkdir(exist_ok=True)
+        unique_name = f"ref_{uuid.uuid4().hex[:8]}.wav"
+        ref_path = temp_dir / unique_name
+        content = await e.file.read()  # await the coroutine
+        with open(ref_path, "wb") as f:
+            f.write(content)
+        uploaded_ref_path = ref_path
+        ref_status.set_text(f"Reference: {e.file.name} (uploaded)")
+        safe_notify("Reference WAV uploaded.", type="positive")
+        print(f"📁 Uploaded reference to: {ref_path}")
+
+    # ---- Build UI (after helper functions) ----
+    with container:
+        ui.label("🎤 Vocalizer").classes("text-h5 q-mb-md")
+        ui.markdown(
+            "Create and edit voices. Adjust sliders, see the radar chart, and preview the sound."
         )
-        proc.backend_name = backend_type
-        await asyncio.to_thread(proc.prepare_text)
-        loaded = await asyncio.to_thread(proc.load_progress)
-        if not loaded:
-            safe_notify("No progress could be loaded.", type="warning")
-            return
-        state.set_processor(proc)
-        app.storage.general["project_active"] = True
-        update_progress_from_processor(proc)
-        safe_notify(f"Resumed '{project_name}'", type="positive")
-        navigate_pipeline("synthesize")
 
-    # ---- Store resume callback ----
-    state.set_resume_callback(resume_project)
+        name_input = ui.input(label="Voice name", value="My Voice").classes("w-full")
+        desc_input = ui.input(label="Description", value="").classes("w-full")
+        tags_input = ui.input(label="Tags (comma separated)", value="").classes("w-full")
+        preview_textarea = (
+            ui.textarea(label="Preview text", value=DEFAULT_PREVIEW)
+            .props("rows=3")
+            .classes("w-full")
+        )
 
-    # ---- Initial view ----
-    navigate("home")
+        with ui.row().classes("w-full"):
+            with ui.column().classes("w-1/3 q-pr-md"):
+                ui.label("Voice").classes("text-h6")
+                temp_slider = ui.slider(min=0.1, max=1.0, step=0.01, value=0.667).classes("w-full")
+                ui.label().bind_text_from(
+                    temp_slider, "value", backward=lambda v: f"Temperature: {v:.2f}"
+                )
 
-    ui.markdown("---")
-    ui.markdown("Audio‑Files Studio · MIT License · running locally")
+                length_slider = ui.slider(min=0.5, max=2.0, step=0.05, value=1.0).classes("w-full")
+                ui.label().bind_text_from(
+                    length_slider, "value", backward=lambda v: f"Length Penalty: {v:.2f}"
+                )
+
+                repeat_slider = ui.slider(min=1.0, max=10.0, step=0.5, value=5.0).classes("w-full")
+                ui.label().bind_text_from(
+                    repeat_slider, "value", backward=lambda v: f"Repetition Penalty: {v:.1f}"
+                )
+
+                ui.label("Pacing").classes("text-h6 q-mt-md")
+                pitch_slider = ui.slider(min=-5, max=5, step=0.5, value=0).classes("w-full")
+                ui.label().bind_text_from(
+                    pitch_slider, "value", backward=lambda v: f"Pitch: {v:.1f}"
+                )
+
+                rate_slider = ui.slider(min=0.5, max=2.0, step=0.05, value=1.0).classes("w-full")
+                ui.label().bind_text_from(rate_slider, "value", backward=lambda v: f"Rate: {v:.2f}")
+
+                ui.label("Clarity").classes("text-h6 q-mt-md")
+                top_p_slider = ui.slider(min=0.0, max=1.0, step=0.01, value=0.8).classes("w-full")
+                ui.label().bind_text_from(
+                    top_p_slider, "value", backward=lambda v: f"Top‑P: {v:.2f}"
+                )
+
+                top_k_slider = ui.slider(min=0, max=100, step=1, value=50).classes("w-full")
+                ui.label().bind_text_from(
+                    top_k_slider, "value", backward=lambda v: f"Top‑K: {int(v)}"
+                )
+
+                normalize_check = ui.checkbox("Normalize volume", value=False)
+
+                ui.label("Reference WAV").classes("text-h6 q-mt-md")
+                ui.upload(
+                    label="Upload reference WAV", auto_upload=True, on_upload=handle_upload
+                ).classes("w-full")
+                ref_status = ui.label("No reference uploaded").classes("text-caption text-grey")
+
+            with ui.column().classes("w-2/3"):
+                with ui.card().classes("w-full q-mb-md"):
+                    ui.label("Radar Chart").classes("text-h6")
+                    ui.markdown("(Interactive chart will appear here in a later update.)")
+                    ui.html(
+                        "<div style='height:300px; background:#f0f0f0; display:flex; align-items:center; justify-content:center;'>Radar Chart Coming Soon</div>"
+                    )
+
+                with ui.card().classes("w-full"):
+                    ui.label("Preview").classes("text-h6")
+                    with ui.row().classes("items-center gap-2"):
+                        ui.button(
+                            "Normal", on_click=lambda: set_preview_text(DEFAULT_PREVIEW)
+                        ).props("flat")
+                        ui.button(
+                            "Poetic", on_click=lambda: set_preview_text(POETIC_PREVIEW)
+                        ).props("flat")
+                        ui.button(
+                            "Scientific", on_click=lambda: set_preview_text(SCIENTIFIC_PREVIEW)
+                        ).props("flat")
+                    generate_btn = ui.button(
+                        "Generate Preview", on_click=generate_preview_action
+                    ).props("color=primary")
+                    preview_spinner = ui.spinner(size="md").props("color=primary")
+                    preview_spinner.visible = False
+                    audio_player = ui.audio("").classes("w-full q-mt-sm")
+                    ui.html(
+                        "<canvas id='waveformCanvas' width='600' height='100' style='width:100%; height:100px; background:#f8f8f8;'></canvas>"
+                    )
+
+                with ui.row().classes("q-mt-md"):
+                    ui.button("Save Voice", on_click=save_voice).props("color=positive")
+                    ui.button("Discard Changes", on_click=navigate_back).props("flat")
+
+        # ---- Load voice if editing ----
+        from nicegui import app
+
+        voice_id_to_load = app.storage.general.get("edit_voice_id", None)
+        if voice_id_to_load:
+            voice = lib.get_voice(voice_id_to_load)
+            if voice:
+                voice_id = voice_id_to_load
+                set_sliders_from_voice(voice)
+        else:
+            reset_to_system_defaults()
+
+        container.switch_to_gallery = None
+
+    return container
 
 
-if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(
-        host="0.0.0.0",
-        port=8501,
-        title="Audio‑Files Studio",
-        favicon="📚",
-        reload=False,
-        show=False,
+async def generate_preview(text: str, params: dict, ref_wav_path: Optional[Path] = None) -> Path:
+    """Generate a preview WAV and return its path."""
+    from bookforge.config import PresetConfig
+    from bookforge.process.chunker import Chunk
+    from bookforge.tts.factory import get_backend
+
+    temp_dir = Path("temp")
+    temp_dir.mkdir(exist_ok=True)
+    out_path = temp_dir / f"preview_{int(datetime.now(timezone.utc).timestamp())}.wav"
+
+    backend_type = "xtts"
+    speaker_wav = ref_wav_path if ref_wav_path and ref_wav_path.exists() else None
+    tts_backend = await asyncio.to_thread(
+        get_backend,
+        backend_type=backend_type,
+        speaker_wav=speaker_wav,
+        **{
+            k: v
+            for k, v in params.items()
+            if k
+            in ["temperature", "length_penalty", "repetition_penalty", "top_p", "top_k", "language"]
+        },
     )
+
+    config = PresetConfig.load(params.get("preset_name", "calm_longform"))
+    chunk = Chunk(id=9999, chapter_index=0, relative_index=0, text=text, estimated_seconds=10.0)
+    await asyncio.to_thread(tts_backend.synthesize_chunk, chunk, config, out_path)
+    return out_path

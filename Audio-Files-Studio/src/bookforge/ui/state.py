@@ -23,6 +23,7 @@ def set_state(key: str, value: Any) -> None:
 
 
 # ---- Processor stored in module (NOT in app.storage) ----
+_settings_dark_toggle = None
 _processor: IncrementalProcessor | None = None
 
 
