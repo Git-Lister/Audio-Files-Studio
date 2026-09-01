@@ -17,7 +17,15 @@ from bookforge.ui.components import (
     update_notification_panel,
     update_progress_from_processor,
 )
-from bookforge.ui.views import home, pipeline, projects, settings, vocalizer, voice_box, wizard
+from bookforge.ui.views import (
+    home,
+    pipeline,
+    projects,
+    settings,
+    vocalizer,
+    voice_box,
+    wizard,
+)
 
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
@@ -53,19 +61,15 @@ async def main_page():
 
     # ---- Dark mode management ----
     def apply_dark_mode(enabled: bool):
-        """Apply dark mode to all UI elements."""
         state.set_dark_mode(enabled)
         ui.dark_mode(enabled)
-        # Update sidebar background
         if enabled:
             drawer.classes(remove="bg-blue-grey-1", add="bg-grey-9")
             dark_btn.icon = "light_mode"
         else:
             drawer.classes(remove="bg-grey-9", add="bg-blue-grey-1")
             dark_btn.icon = "dark_mode"
-        # Update notification panel text colors
         update_notification_panel()
-        # Update settings toggle if it exists
         if hasattr(state, "_settings_dark_toggle") and state._settings_dark_toggle is not None:
             state._settings_dark_toggle.value = enabled
 
@@ -73,7 +77,6 @@ async def main_page():
         new_mode = not state.get_dark_mode()
         apply_dark_mode(new_mode)
 
-    # Initial dark mode
     dark_mode = state.get_dark_mode()
     ui.dark_mode(dark_mode)
 
@@ -83,7 +86,8 @@ async def main_page():
         ui.label("📚 Audio‑Files Studio").classes("text-h5")
         project_badge = ui.label("").classes("text-caption text-gold q-ml-auto")
         dark_btn = ui.button(
-            icon="dark_mode" if not dark_mode else "light_mode", on_click=toggle_dark_mode
+            icon="dark_mode" if not dark_mode else "light_mode",
+            on_click=toggle_dark_mode,
         ).props("flat color=white")
 
     # ---- Sidebar (dynamic background) ----
@@ -94,38 +98,18 @@ async def main_page():
         with ui.column().classes("w-full p-4"):
             ui.label("Navigation").classes("text-h6 text-grey-8")
             ui.separator()
-            ui.button("Home", icon="home", on_click=lambda: navigate("home")).props(
-                "flat align=left"
-            )
-            ui.button("New Project", icon="add", on_click=lambda: navigate("wizard")).props(
-                "flat align=left color=primary"
-            )
-            ui.button("Projects", icon="folder", on_click=lambda: navigate("projects")).props(
-                "flat align=left"
-            )
-            ui.button("Voice Box (Gallery)", icon="library_books", on_click=lambda: navigate("voice_box")).props(
-                "flat align=left"
-            )
-
-            ui.button("Vocalizer (Creator)", icon="edit", on_click=lambda: navigate("vocalizer")).props(
-                "flat align=left"
-            )
-
-            ui.button("Settings", icon="settings", on_click=lambda: navigate("settings")).props(
-                "flat align=left"
-            )
+            ui.button("Home", icon="home", on_click=lambda: navigate("home")).props("flat align=left")
+            ui.button("New Project", icon="add", on_click=lambda: navigate("wizard")).props("flat align=left color=primary")
+            ui.button("Projects", icon="folder", on_click=lambda: navigate("projects")).props("flat align=left")
+            ui.button("Voice Box (Gallery)", icon="library_books", on_click=lambda: navigate("voice_box")).props("flat align=left")
+            ui.button("Vocalizer (Creator)", icon="edit", on_click=lambda: navigate("vocalizer")).props("flat align=left")
+            ui.button("Settings", icon="settings", on_click=lambda: navigate("settings")).props("flat align=left")
             ui.separator()
 
             pipeline_label = ui.label("Pipeline").classes("text-h6 text-grey-8 mt-4")
-            nav_prepare = ui.button(
-                "1. Prepare", on_click=lambda: navigate_pipeline("prepare")
-            ).props("flat align=left")
-            nav_synthesize = ui.button(
-                "2. Synthesize", on_click=lambda: navigate_pipeline("synthesize")
-            ).props("flat align=left")
-            nav_finalize = ui.button(
-                "3. Finalize", on_click=lambda: navigate_pipeline("finalize")
-            ).props("flat align=left")
+            nav_prepare = ui.button("1. Prepare", on_click=lambda: navigate_pipeline("prepare")).props("flat align=left")
+            nav_synthesize = ui.button("2. Synthesize", on_click=lambda: navigate_pipeline("synthesize")).props("flat align=left")
+            nav_finalize = ui.button("3. Finalize", on_click=lambda: navigate_pipeline("finalize")).props("flat align=left")
 
             for item in (pipeline_label, nav_prepare, nav_synthesize, nav_finalize):
                 item.bind_visibility_from(app.storage.general, "project_active")
@@ -133,6 +117,7 @@ async def main_page():
             app.storage.general["project_active"] = False
 
     # ---- Main content ----
+    # Notification panel
     notification_panel = ui.column().classes("w-full q-pa-md")
     import bookforge.ui.components as comp
 
@@ -140,10 +125,12 @@ async def main_page():
     with notification_panel:
         ui.label("📢 Notifications").classes("text-subtitle1")
 
+    # Single content container – we'll rebuild it on navigation
     content = ui.column().classes("w-full p-4")
 
     # ---- Navigation functions ----
     def navigate(view_name: str):
+        # Clear and rebuild the content based on the view
         content.clear()
         with content:
             if view_name == "home":
@@ -160,11 +147,14 @@ async def main_page():
                 except Exception as e:
                     safe_notify(f"Pipeline error: {e}", type="negative")
                     import traceback
-
                     traceback.print_exc()
-                    ui.label(f"Pipeline failed to load. See notifications above.").classes(
-                        "text-negative"
-                    )
+                    ui.label(f"Pipeline failed to load. See notifications above.").classes("text-negative")
+            elif view_name == "voice_box":
+                # Show Voice Box (Gallery)
+                voice_box.view()
+            elif view_name == "vocalizer":
+                # Show Vocalizer (Editor)
+                vocalizer.view()
             else:
                 ui.label("Unknown view")
         state.set_current_view(view_name)
@@ -187,9 +177,7 @@ async def main_page():
                 project_badge.set_text(f"Project: {proc.output_dir.name} (Completed)")
             else:
                 progress = proc.get_progress()
-                project_badge.set_text(
-                    f"Project: {proc.output_dir.name} – {progress.status_message}"
-                )
+                project_badge.set_text(f"Project: {proc.output_dir.name} – {progress.status_message}")
         else:
             project_badge.set_text("")
 
