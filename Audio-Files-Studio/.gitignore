@@ -18,7 +18,8 @@ chunks/
 *.m4a
 
 # Voice models (large binary files)
-voices/
+voices/*
+!voices/.gitkeep
 
 # Generated audiobooks and project outputs
 out/*
