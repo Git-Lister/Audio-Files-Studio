@@ -12,8 +12,11 @@ from bookforge.ui import voice_library as lib
 from bookforge.ui.components import safe_notify
 
 
-def view():
+def view(switch_to_vocalizer_callback=None):
     container = ui.column().classes("w-full")
+    # Store the callback on the container for use in edit_voice
+    container.switch_to_vocalizer = switch_to_vocalizer_callback
+
     with container:
         ui.label("📦 Voice Box (Gallery)").classes("text-h5 q-mb-md")
         ui.markdown("Browse your saved voices. Click **Edit** to open the Vocalizer and fine‑tune.")
@@ -83,7 +86,10 @@ def view():
                 return
             try:
                 wav_path = await generate_preview(
-                    text=voice.get("preview_text", DEFAULT_PREVIEW_TEXT),
+                    text=voice.get(
+                        "preview_text",
+                        "This is a sample of my voice. It is clear, natural, and ready for narration.",
+                    ),
                     params={
                         "temperature": voice["temperature"],
                         "length_penalty": voice["length_penalty"],
@@ -104,7 +110,8 @@ def view():
             from nicegui import app
 
             app.storage.general["edit_voice_id"] = voice_id
-            if hasattr(container, "switch_to_vocalizer") and container.switch_to_vocalizer:
+            # Use the callback stored on container
+            if container.switch_to_vocalizer:
                 container.switch_to_vocalizer()
             else:
                 safe_notify("Navigation not configured.", type="warning")
@@ -164,11 +171,5 @@ def view():
         # Initial load
         refresh()
         search_input.on_value_change(lambda: refresh())
-        container.switch_to_vocalizer = None
 
     return container
-
-
-DEFAULT_PREVIEW_TEXT = (
-    "This is a sample of my voice. It is clear, natural, and ready for narration."
-)

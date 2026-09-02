@@ -151,9 +151,9 @@ async def main_page():
             elif view_name == "projects":
                 projects.view()
             elif view_name == "voice_box":
-                voice_box.view()
+                voice_box.view(switch_to_vocalizer_callback=lambda: navigate("vocalizer"))
             elif view_name == "vocalizer":
-                vocalizer.view()
+                vocalizer.view(switch_to_gallery_callback=lambda: navigate("voice_box"))
             elif view_name == "settings":
                 settings.view(on_dark_toggle=apply_dark_mode)
             elif view_name == "wizard":
