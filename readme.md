@@ -85,6 +85,14 @@ Then open your browser at [http://localhost:8501](http://localhost:8501).
 
 ### Option 2: Local (Python virtualenv)
 
+> **Important — Python version requirement:**
+> This project requires **Python 3.11**. The `TTS` (Coqui) library does not currently support Python 3.12 or newer. Install Python 3.11.x from [python.org](https://www.python.org/downloads/release/python-3119/) before proceeding.
+>
+> **Note for Windows users:**
+> The `TTS` library requires a C++ compiler to build. If you see an error mentioning "Microsoft Visual C++ 14.0 or greater is required", install the **Microsoft C++ Build Tools** from the [official page](https://visualstudio.microsoft.com/visual-cpp-build-tools/). During setup, select the **"Desktop development with C++"** workload. Then retry the installation.
+>
+> Alternatively, use Docker (Option 1) or run inside a WSL2 environment to avoid these issues entirely.
+
 1. Create and activate a virtual environment:
    ```bash
    python -m venv venv

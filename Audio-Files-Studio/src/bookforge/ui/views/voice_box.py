@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,9 +55,11 @@ def view(switch_to_vocalizer_callback=None):
                                     ui.label("built‑in").classes("text-caption text-grey")
                             if voice.get("tags"):
                                 ui.label(voice["tags"]).classes("text-caption text-grey")
+                            audio = ui.audio("").classes("hidden w-full q-mt-sm")
                             with ui.row().classes("items-center gap-2 q-mt-sm"):
                                 play_btn = ui.button(
-                                    icon="play_arrow", on_click=lambda v=voice: play_voice(v)
+                                    icon="play_arrow",
+                                    on_click=lambda v=voice, a=audio: play_voice(v, a),
                                 ).props("flat size=sm")
                                 ui.button(
                                     icon="edit", on_click=lambda v=voice: edit_voice(v["id"])
@@ -68,43 +71,28 @@ def view(switch_to_vocalizer_callback=None):
                                     ui.button(
                                         icon="archive", on_click=lambda v=voice: export_voice(v)
                                     ).props("flat size=sm")
-                            audio = ui.audio("").classes("hidden w-full q-mt-sm")
-                            setattr(play_btn, "_audio", audio)
-                            setattr(play_btn, "_voice", voice)
 
             with ui.row().classes("q-mb-md"):
                 ui.button("Import Voice", icon="file_upload", on_click=import_voice).props(
                     "flat color=primary"
                 )
 
-        async def play_voice(voice):
-            from bookforge.ui.views.vocalizer import generate_preview
-
-            audio = getattr(voice, "_audio", None)
-            if audio is None:
-                safe_notify("Playback not available for this voice.", type="warning")
-                return
-            try:
-                wav_path = await generate_preview(
-                    text=voice.get(
-                        "preview_text",
-                        "This is a sample of my voice. It is clear, natural, and ready for narration.",
-                    ),
-                    params={
-                        "temperature": voice["temperature"],
-                        "length_penalty": voice["length_penalty"],
-                        "repetition_penalty": voice["repetition_penalty"],
-                        "top_p": voice["top_p"],
-                        "top_k": voice["top_k"],
-                        "language": voice.get("language", "en"),
-                        "reference_wav": voice.get("reference_wav_path"),
-                    },
+        async def play_voice(voice, audio_element):
+            """Play the voice's baked preview WAV, if it exists."""
+            preview_path = lib.get_preview_path(voice["id"])
+            if preview_path.exists():
+                try:
+                    audio_element.set_source(str(preview_path))
+                    audio_element.classes(remove="hidden")
+                except RuntimeError:
+                    # Element was deleted (user navigated away)
+                    pass
+            else:
+                safe_notify(
+                    f"No preview baked for '{voice['name']}'. "
+                    f"Edit and save the voice to generate one.",
+                    type="warning",
                 )
-                audio.set_source(str(wav_path))
-                audio.classes(remove="hidden")
-                safe_notify("Preview ready!", type="positive")
-            except Exception as e:
-                safe_notify(f"Preview generation failed: {e}", type="negative")
 
         def edit_voice(voice_id):
             from nicegui import app
@@ -136,10 +124,17 @@ def view(switch_to_vocalizer_callback=None):
                 safe_notify("Failed to delete voice.", type="negative")
 
         async def export_voice(voice):
-            download_path = Path.home() / "Downloads" / f"{voice['name']}.voice.zip"
+            """Export a voice to a .voice.zip and stream it to the browser."""
             try:
-                lib.export_voice(voice["id"], download_path)
-                safe_notify(f"Exported to {download_path}", type="positive")
+                tmp_dir = Path("temp")
+                tmp_dir.mkdir(exist_ok=True)
+                zip_path = tmp_dir / f"{voice['id']}.voice.zip"
+                lib.export_voice(voice["id"], zip_path)
+                ui.download.file(
+                    zip_path,
+                    filename=f"{voice['name']}.voice.zip",
+                )
+                safe_notify(f"Exported '{voice['name']}'", type="positive")
             except Exception as e:
                 safe_notify(f"Export failed: {e}", type="negative")
 
@@ -148,19 +143,21 @@ def view(switch_to_vocalizer_callback=None):
                 ui.label("Import Voice").classes("text-h6")
                 ui.markdown("Select a `.voice.zip` file exported from another instance.")
                 ui.upload(
-                    label="Upload .zip file", on_upload=lambda e: handle_import(e, dialog)
+                    label="Upload .zip file",
+                    on_upload=lambda e: asyncio.create_task(handle_import(e, dialog)),
                 ).props("accept=.zip")
                 ui.button("Cancel", on_click=dialog.close).props("flat")
             dialog.open()
 
-        def handle_import(e, dialog):
+        async def handle_import(e, dialog):
             try:
                 temp_zip = (
                     Path("temp") / f"import_{int(datetime.now(timezone.utc).timestamp())}.zip"
                 )
                 temp_zip.parent.mkdir(exist_ok=True)
+                content = await e.file.read()
                 with open(temp_zip, "wb") as f:
-                    f.write(e.file.read())
+                    f.write(content)
                 new_id = lib.import_voice(temp_zip)
                 safe_notify(f"Imported voice with ID {new_id}", type="positive")
                 dialog.close()

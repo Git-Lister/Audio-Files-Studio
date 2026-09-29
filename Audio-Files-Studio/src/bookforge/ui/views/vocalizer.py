@@ -17,13 +17,219 @@ from nicegui import app, ui
 from bookforge.ui import voice_library as lib
 from bookforge.ui.components import safe_notify
 
+# ---- Inject radar JavaScript globally (shared=True) ----
+ui.add_body_html(
+    """
+<script>
+console.log("Radar script loaded");
+// ---- Radar chart JavaScript ----
+(function() {
+    const NUM_AXES = 5;
+    const AXIS_LABELS = ["Expressiveness", "Speed", "Stability", "Warmth", "Pacing"];
+    const COLOUR_GRID = (window.matchMedia('(prefers-color-scheme: dark)').matches) ? '#666' : '#ccc';
+    const COLOUR_TEXT = (window.matchMedia('(prefers-color-scheme: dark)').matches) ? '#eee' : '#333';
+    const COLOUR_POLYGON = 'rgba(201, 169, 89, 0.3)';
+    const COLOUR_STROKE = '#c9a959';
+    const COLOUR_VERTEX = '#c9a959';
+    const RADIUS = 160;
+    const CENTER_X = 300;
+    const CENTER_Y = 200;
+    const VERTEX_RADIUS = 6;
+
+    let currentValues = [0.5, 0.5, 0.5, 0.5, 0.5];
+    let isDragging = false;
+    let dragAxisIndex = -1;
+    let canvas, ctx;
+
+    // ---- Expose drawRadarChart globally ----
+    window.drawRadarChart = function(values) {
+        console.log("drawRadarChart called with", values);
+        if (!canvas) {
+            canvas = document.getElementById('radarChart');
+            if (!canvas) {
+                setTimeout(() => window.drawRadarChart(values), 100);
+                return;
+            }
+            ctx = canvas.getContext('2d');
+            canvas.addEventListener('mousedown', handleMouseDown);
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseup', handleMouseUp);
+            canvas.addEventListener('mouseleave', handleMouseUp);
+        }
+        currentValues = values.map(v => Math.max(0, Math.min(1, v)));
+        draw();
+    };
+
+    function draw() {
+        if (!ctx || !canvas) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // concentric rings
+        for (let i = 1; i <= 5; i++) {
+            const r = (i / 5) * RADIUS;
+            ctx.beginPath();
+            ctx.arc(CENTER_X, CENTER_Y, r, 0, 2 * Math.PI);
+            ctx.strokeStyle = COLOUR_GRID;
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+        }
+        // axes
+        for (let i = 0; i < NUM_AXES; i++) {
+            const angle = (i / NUM_AXES) * 2 * Math.PI - Math.PI / 2;
+            const x = CENTER_X + RADIUS * Math.cos(angle);
+            const y = CENTER_Y + RADIUS * Math.sin(angle);
+            ctx.beginPath();
+            ctx.moveTo(CENTER_X, CENTER_Y);
+            ctx.lineTo(x, y);
+            ctx.strokeStyle = COLOUR_GRID;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            const labelX = CENTER_X + (RADIUS + 20) * Math.cos(angle);
+            const labelY = CENTER_Y + (RADIUS + 20) * Math.sin(angle);
+            ctx.fillStyle = COLOUR_TEXT;
+            ctx.font = '12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(AXIS_LABELS[i], labelX, labelY);
+        }
+        // polygon
+        const points = [];
+        for (let i = 0; i < NUM_AXES; i++) {
+            const angle = (i / NUM_AXES) * 2 * Math.PI - Math.PI / 2;
+            const r = currentValues[i] * RADIUS;
+            points.push({
+                x: CENTER_X + r * Math.cos(angle),
+                y: CENTER_Y + r * Math.sin(angle)
+            });
+        }
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) {
+            ctx.lineTo(points[i].x, points[i].y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = COLOUR_POLYGON;
+        ctx.fill();
+        ctx.strokeStyle = COLOUR_STROKE;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        // vertices
+        for (let i = 0; i < points.length; i++) {
+            ctx.beginPath();
+            ctx.arc(points[i].x, points[i].y, VERTEX_RADIUS, 0, 2 * Math.PI);
+            ctx.fillStyle = COLOUR_VERTEX;
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+    }
+
+    // ---- Mouse interaction ----
+    function getMousePos(e) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        return {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY,
+        };
+    }
+
+    function getClosestVertex(mx, my) {
+        let minDist = 20;
+        let idx = -1;
+        for (let i = 0; i < NUM_AXES; i++) {
+            const angle = (i / NUM_AXES) * 2 * Math.PI - Math.PI / 2;
+            const r = currentValues[i] * RADIUS;
+            const vx = CENTER_X + r * Math.cos(angle);
+            const vy = CENTER_Y + r * Math.sin(angle);
+            const dist = Math.hypot(mx - vx, my - vy);
+            if (dist < minDist) {
+                minDist = dist;
+                idx = i;
+            }
+        }
+        return idx;
+    }
+
+    function handleMouseDown(e) {
+        const pos = getMousePos(e);
+        const idx = getClosestVertex(pos.x, pos.y);
+        if (idx !== -1) {
+            isDragging = true;
+            dragAxisIndex = idx;
+            e.preventDefault();
+        }
+    }
+
+    function handleMouseMove(e) {
+        if (!isDragging || dragAxisIndex === -1) return;
+        const pos = getMousePos(e);
+        const dx = pos.x - CENTER_X;
+        const dy = pos.y - CENTER_Y;
+        const angle = Math.atan2(dy, dx);
+        const expectedAngle = (dragAxisIndex / NUM_AXES) * 2 * Math.PI - Math.PI / 2;
+        const projection = Math.cos(angle - expectedAngle);
+        const distance = Math.hypot(dx, dy);
+        let val = (distance * projection) / RADIUS;
+        val = Math.max(0, Math.min(1, val));
+        currentValues[dragAxisIndex] = val;
+        draw();
+        sendDragData(dragAxisIndex, val);
+    }
+
+    function handleMouseUp(e) {
+        if (isDragging) {
+            isDragging = false;
+            dragAxisIndex = -1;
+        }
+    }
+
+    function sendDragData(axisIndex, value) {
+        const input = document.getElementById('radar_drag_input');
+        if (input) {
+            input.value = JSON.stringify({axis: axisIndex, value: value});
+            input.dispatchEvent(new Event('change'));
+        } else {
+            console.warn('Radar: hidden input not found');
+        }
+    }
+
+    // ---- Auto‑draw when canvas appears ----
+    function checkCanvas() {
+        const el = document.getElementById('radarChart');
+        if (el) {
+            window.drawRadarChart(currentValues);
+        } else {
+            setTimeout(checkCanvas, 200);
+        }
+    }
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        checkCanvas();
+    } else {
+        document.addEventListener('DOMContentLoaded', checkCanvas);
+    }
+})();
+</script>
+""",
+    shared=True,
+)
+
 # ---- Debug flag ----
 RADAR_DEBUG = False
 
 # ---- Default preview texts ----
 DEFAULT_PREVIEW = "This is a sample of my voice. It is clear, natural, and ready for narration."
-POETIC_PREVIEW = "In th’ olde dayes of the King Arthour, Of which that Britons speken greet honour, All was this land fulfild of fayerye."
+POETIC_PREVIEW = "In th' olde dayes of the King Arthour, Of which that Britons speken greet honour, All was this land fulfild of fayerye."
 SCIENTIFIC_PREVIEW = "The quantum entanglement of the phonon field underlies the emergent properties of the vocal tract's resonance, which we model as a coupled oscillator system."
+
+# Text used when baking a permanent preview on save -- neutral audiobook prose
+BAKED_PREVIEW_TEXT = (
+    "The morning was still and quiet, and the last of the evening's rain glistened "
+    "on the rooftops. She paused at the window, listening for a moment, before "
+    "turning back into the room. There was much to be done, and little time in "
+    "which to do it."
+)
 
 # ---- Radar axes ----
 RADAR_AXES = [
@@ -60,188 +266,6 @@ def get_radar_values(temp, length_penalty, repetition_penalty, pitch, rate) -> l
 def view(switch_to_gallery_callback=None):
     container = ui.column().classes("w-full")
     container.switch_to_gallery = switch_to_gallery_callback  # type: ignore
-
-    # ---- Inject radar JavaScript once ----
-    if not app.storage.general.get("radar_script_added", False):
-        ui.add_body_html("""
-        <script>
-        // ---- Radar chart JavaScript (global) ----
-        (function() {
-            const NUM_AXES = 5;
-            const AXIS_LABELS = ["Expressiveness", "Speed", "Stability", "Warmth", "Pacing"];
-            const COLOUR_GRID = (window.matchMedia('(prefers-color-scheme: dark)').matches) ? '#666' : '#ccc';
-            const COLOUR_TEXT = (window.matchMedia('(prefers-color-scheme: dark)').matches) ? '#eee' : '#333';
-            const COLOUR_POLYGON = 'rgba(201, 169, 89, 0.3)';
-            const COLOUR_STROKE = '#c9a959';
-            const COLOUR_VERTEX = '#c9a959';
-            const RADIUS = 160;
-            const CENTER_X = 300;
-            const CENTER_Y = 200;
-            const VERTEX_RADIUS = 6;
-
-            let currentValues = [0.5, 0.5, 0.5, 0.5, 0.5];
-            let isDragging = false;
-            let dragAxisIndex = -1;
-            let canvas, ctx;
-
-            function init() {
-                canvas = document.getElementById('radarChart');
-                if (!canvas) return;
-                ctx = canvas.getContext('2d');
-                drawRadarChart(currentValues);
-                canvas.addEventListener('mousedown', handleMouseDown);
-                canvas.addEventListener('mousemove', handleMouseMove);
-                canvas.addEventListener('mouseup', handleMouseUp);
-                canvas.addEventListener('mouseleave', handleMouseUp);
-            }
-
-            window.drawRadarChart = function(values) {
-                if (!ctx || !canvas) return;
-                currentValues = values.map(v => Math.max(0, Math.min(1, v)));
-                draw();
-            };
-
-            function draw() {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                // concentric rings
-                for (let i = 1; i <= 5; i++) {
-                    const r = (i / 5) * RADIUS;
-                    ctx.beginPath();
-                    ctx.arc(CENTER_X, CENTER_Y, r, 0, 2 * Math.PI);
-                    ctx.strokeStyle = COLOUR_GRID;
-                    ctx.lineWidth = 0.5;
-                    ctx.stroke();
-                }
-                // axes
-                for (let i = 0; i < NUM_AXES; i++) {
-                    const angle = (i / NUM_AXES) * 2 * Math.PI - Math.PI / 2;
-                    const x = CENTER_X + RADIUS * Math.cos(angle);
-                    const y = CENTER_Y + RADIUS * Math.sin(angle);
-                    ctx.beginPath();
-                    ctx.moveTo(CENTER_X, CENTER_Y);
-                    ctx.lineTo(x, y);
-                    ctx.strokeStyle = COLOUR_GRID;
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-                    const labelX = CENTER_X + (RADIUS + 20) * Math.cos(angle);
-                    const labelY = CENTER_Y + (RADIUS + 20) * Math.sin(angle);
-                    ctx.fillStyle = COLOUR_TEXT;
-                    ctx.font = '12px sans-serif';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(AXIS_LABELS[i], labelX, labelY);
-                }
-                // polygon
-                const points = [];
-                for (let i = 0; i < NUM_AXES; i++) {
-                    const angle = (i / NUM_AXES) * 2 * Math.PI - Math.PI / 2;
-                    const r = currentValues[i] * RADIUS;
-                    points.push({
-                        x: CENTER_X + r * Math.cos(angle),
-                        y: CENTER_Y + r * Math.sin(angle)
-                    });
-                }
-                ctx.beginPath();
-                ctx.moveTo(points[0].x, points[0].y);
-                for (let i = 1; i < points.length; i++) {
-                    ctx.lineTo(points[i].x, points[i].y);
-                }
-                ctx.closePath();
-                ctx.fillStyle = COLOUR_POLYGON;
-                ctx.fill();
-                ctx.strokeStyle = COLOUR_STROKE;
-                ctx.lineWidth = 2;
-                ctx.stroke();
-                // vertices
-                for (let i = 0; i < points.length; i++) {
-                    ctx.beginPath();
-                    ctx.arc(points[i].x, points[i].y, VERTEX_RADIUS, 0, 2 * Math.PI);
-                    ctx.fillStyle = COLOUR_VERTEX;
-                    ctx.fill();
-                    ctx.strokeStyle = '#fff';
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-                }
-            }
-
-            function getMousePos(e) {
-                const rect = canvas.getBoundingClientRect();
-                const scaleX = canvas.width / rect.width;
-                const scaleY = canvas.height / rect.height;
-                return {
-                    x: (e.clientX - rect.left) * scaleX,
-                    y: (e.clientY - rect.top) * scaleY,
-                };
-            }
-
-            function getClosestVertex(mx, my) {
-                let minDist = 20;
-                let idx = -1;
-                for (let i = 0; i < NUM_AXES; i++) {
-                    const angle = (i / NUM_AXES) * 2 * Math.PI - Math.PI / 2;
-                    const r = currentValues[i] * RADIUS;
-                    const vx = CENTER_X + r * Math.cos(angle);
-                    const vy = CENTER_Y + r * Math.sin(angle);
-                    const dist = Math.hypot(mx - vx, my - vy);
-                    if (dist < minDist) {
-                        minDist = dist;
-                        idx = i;
-                    }
-                }
-                return idx;
-            }
-
-            function handleMouseDown(e) {
-                const pos = getMousePos(e);
-                const idx = getClosestVertex(pos.x, pos.y);
-                if (idx !== -1) {
-                    isDragging = true;
-                    dragAxisIndex = idx;
-                    e.preventDefault();
-                }
-            }
-
-            function handleMouseMove(e) {
-                if (!isDragging || dragAxisIndex === -1) return;
-                const pos = getMousePos(e);
-                const dx = pos.x - CENTER_X;
-                const dy = pos.y - CENTER_Y;
-                const angle = Math.atan2(dy, dx);
-                const expectedAngle = (dragAxisIndex / NUM_AXES) * 2 * Math.PI - Math.PI / 2;
-                const projection = Math.cos(angle - expectedAngle);
-                const distance = Math.hypot(dx, dy);
-                let val = (distance * projection) / RADIUS;
-                val = Math.max(0, Math.min(1, val));
-                currentValues[dragAxisIndex] = val;
-                draw();
-                sendDragData(dragAxisIndex, val);
-            }
-
-            function handleMouseUp(e) {
-                if (isDragging) {
-                    isDragging = false;
-                    dragAxisIndex = -1;
-                }
-            }
-
-            function sendDragData(axisIndex, value) {
-                const input = document.getElementById('radar_drag_input');
-                if (input) {
-                    input.value = JSON.stringify({axis: axisIndex, value: value});
-                    input.dispatchEvent(new Event('change'));
-                } else {
-                    console.warn('Radar: hidden input not found');
-                }
-            }
-
-            document.addEventListener('DOMContentLoaded', init);
-            if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                init();
-            }
-        })();
-        </script>
-        """)
-        app.storage.general["radar_script_added"] = True
 
     # ---- State ----
     voice_id = None
@@ -338,7 +362,8 @@ def view(switch_to_gallery_callback=None):
             pitch_slider.value,
             rate_slider.value,
         )
-        ui.run_javascript(f"drawRadarChart({values})")
+        # Call with a delay to ensure canvas is ready
+        ui.run_javascript(f"setTimeout(() => drawRadarChart({values}), 100)")
 
     def check_radar_drag():
         data = app.storage.general.get("radar_drag_data", "")
@@ -384,8 +409,11 @@ def view(switch_to_gallery_callback=None):
             print(f"📁 Uploaded reference to: {ref_path}")
 
     async def generate_preview_action():
-        preview_spinner.visible = True
-        generate_btn.disable()
+        try:
+            preview_spinner.visible = True
+            generate_btn.disable()
+        except RuntimeError:
+            pass
         try:
             text = preview_textarea.value or DEFAULT_PREVIEW
             params = get_current_params()
@@ -395,14 +423,20 @@ def view(switch_to_gallery_callback=None):
                 if voice and voice.get("reference_wav_path"):
                     ref_path_to_use = Path(voice["reference_wav_path"])
             wav_path = await generate_preview(text, params, ref_path_to_use)
-            audio_player.set_source(str(wav_path))
+            try:
+                audio_player.set_source(str(wav_path))
+            except RuntimeError:
+                pass
             draw_waveform(wav_path)
             safe_notify("Preview generated!", type="positive")
         except Exception as e:
             safe_notify(f"Generation failed: {e}", type="negative")
         finally:
-            preview_spinner.visible = False
-            generate_btn.enable()
+            try:
+                preview_spinner.visible = False
+                generate_btn.enable()
+            except RuntimeError:
+                pass
 
     def draw_waveform(wav_path):
         try:
@@ -466,20 +500,67 @@ def view(switch_to_gallery_callback=None):
             """)
 
     async def save_voice():
+        nonlocal voice_id
         data = {
             "name": (name_input.value or "").strip() or "Unnamed Voice",
             "description": desc_input.value or "",
             "tags": tags_input.value or "",
             "preview_text": preview_textarea.value or DEFAULT_PREVIEW,
             **get_current_params(),
-            "reference_wav_path": str(uploaded_ref_path) if uploaded_ref_path else None,
         }
+        # Only overwrite reference_wav_path when a new reference was uploaded this session.
+        # Otherwise the existing DB value is preserved (fixes edit-without-reupload wipe).
+        if uploaded_ref_path and uploaded_ref_path.exists():
+            data["reference_wav_path"] = str(uploaded_ref_path)
+
+        # Step 1: persist parameters (create or update)
         if voice_id:
             lib.update_voice(voice_id, data)
-            safe_notify(f"Voice '{data['name']}' updated!", type="positive")
         else:
-            new_id = lib.add_voice(data)
-            safe_notify(f"Voice '{data['name']}' created!", type="positive")
+            voice_id = lib.add_voice(data)
+
+        # Step 2: persist reference WAV if uploaded this session
+        ref_for_bake: Optional[Path] = None
+        if uploaded_ref_path and uploaded_ref_path.exists():
+            persisted = lib.persist_reference(voice_id, uploaded_ref_path)
+            lib.update_voice(voice_id, {"reference_wav_path": str(persisted)})
+            ref_for_bake = persisted
+        else:
+            # Fall back to the voice's already-saved reference, if any
+            voice = lib.get_voice(voice_id)
+            if voice and voice.get("reference_wav_path"):
+                candidate = Path(voice["reference_wav_path"])
+                if candidate.exists():
+                    ref_for_bake = candidate
+
+        # Step 3: bake preview (best-effort -- do not fail the save)
+        if ref_for_bake is not None:
+            try:
+                params_for_bake = get_current_params()
+                params_for_bake["preset_name"] = "calm_longform"
+                baked_tmp = await generate_preview(
+                    BAKED_PREVIEW_TEXT, params_for_bake, ref_for_bake
+                )
+                import shutil
+
+                target_dir = lib.get_voice_dir(voice_id)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target = target_dir / "preview.wav"
+                shutil.copy(baked_tmp, target)
+                safe_notify(f"Voice '{data['name']}' saved with preview.", type="positive")
+            except Exception as e:
+                safe_notify(
+                    f"Voice '{data['name']}' saved, but preview could not be baked: {e}",
+                    type="warning",
+                )
+        else:
+            safe_notify(
+                f"Voice '{data['name']}' saved (no reference WAV -- preview not baked).",
+                type="warning",
+            )
+
+        # Clear the edit flag so the next visit starts fresh
+        app.storage.general["edit_voice_id"] = None
         navigate_back()
 
     def navigate_back():
@@ -575,7 +656,7 @@ def view(switch_to_gallery_callback=None):
                         .props('type="hidden" id="radar_drag_input"')
                         .bind_value_to(app.storage.general, "radar_drag_data")
                     )
-                    # Canvas only – no script
+                    # Canvas – note the id
                     ui.html("""
                     <div style="position:relative; width:100%; max-width:600px; margin:0 auto;">
                         <canvas id="radarChart" width="600" height="400"></canvas>
@@ -615,6 +696,7 @@ def view(switch_to_gallery_callback=None):
             if voice:
                 voice_id = voice_id_to_load
                 set_sliders_from_voice(voice)
+            app.storage.general["edit_voice_id"] = None
         else:
             reset_to_system_defaults()
 

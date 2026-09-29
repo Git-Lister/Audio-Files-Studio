@@ -15,6 +15,28 @@ DB_PATH = Path("voice_library.db")
 USER_VOICES_DIR = Path("user_voices")
 
 
+def get_voice_dir(voice_id: str) -> Path:
+    """Return the canonical directory for a voice's persistent assets."""
+    return USER_VOICES_DIR / voice_id
+
+
+def persist_reference(voice_id: str, source_path: Path) -> Path:
+    """Copy a reference WAV into the voice's persistent directory.
+
+    Returns the destination path. Creates the directory if needed.
+    """
+    dest_dir = get_voice_dir(voice_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "reference.wav"
+    shutil.copy(source_path, dest)
+    return dest
+
+
+def get_preview_path(voice_id: str) -> Path:
+    """Return the canonical preview WAV path for a voice (may not exist)."""
+    return get_voice_dir(voice_id) / "preview.wav"
+
+
 def init_db():
     """Create tables if they don't exist."""
     conn = sqlite3.connect(DB_PATH)
@@ -175,9 +197,9 @@ def update_voice(voice_id: str, data: Dict[str, Any]) -> None:
             values.append(data[key])
     if not fields:
         return
-    values.append(voice_id)
-    query = f"UPDATE voices SET {', '.join(fields)}, updated_at = ? WHERE id = ?"
     values.append(now)
+    query = f"UPDATE voices SET {', '.join(fields)}, updated_at = ? WHERE id = ?"
+    values.append(voice_id)
     c.execute(query, values)
     conn.commit()
     conn.close()

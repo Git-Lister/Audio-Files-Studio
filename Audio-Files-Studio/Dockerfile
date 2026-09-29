@@ -8,6 +8,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
+RUN mkdir -p /app/.nicegui && chmod 777 /app/.nicegui
+
 RUN apt-get update && apt-get install -y \
     software-properties-common \
     curl \

@@ -10,6 +10,7 @@ from pathlib import Path
 from nicegui import ui
 
 from bookforge.config import PresetConfig
+from bookforge.ui import voice_library as lib
 from bookforge.ui.components import extract_upload_bytes, safe_notify, set_processor
 
 
@@ -36,6 +37,8 @@ class WizardState:
         self.voice_model: Path | None = None
         self.preset_dropdown: ui.select | None = None
         self.speaker_label: ui.label | None = None
+        self.selected_voice_id: str | None = None
+        self.voice_dropdown: ui.select | None = None
 
         # Advanced
         self.temp_slider: ui.slider | None = None
@@ -221,11 +224,27 @@ class WizardState:
 
                 # XTTS (visible by default)
                 with ui.column().bind_visibility_from(backend_radio, "value", value="xtts"):
+                    # --- Saved voice dropdown ---
+                    voices = lib.list_voices(system=False)
+                    voice_options: dict[str, str] = {"": "— Custom upload below —"}
+                    for v in voices:
+                        voice_options[v["id"]] = v["name"]
+
+                    self.voice_dropdown = ui.select(
+                        label="Use a saved voice",
+                        options=voice_options,
+                        value="",
+                        on_change=self.on_voice_selected,
+                    ).classes("w-full")
+
+                    # --- Reference status label ---
                     self.speaker_label = ui.label("No speaker file selected").classes(
                         "text-caption text-grey"
                     )
+
+                    # --- Custom upload (fallback) ---
                     ui.upload(
-                        label="Reference speaker WAV",
+                        label="Or upload a custom reference WAV",
                         on_upload=self.on_speaker_upload,
                         auto_upload=True,
                     ).classes("w-full")
@@ -251,23 +270,81 @@ class WizardState:
         except Exception as e:
             safe_notify(f"Failed to save speaker file: {e}", type="negative")
 
+    def on_voice_selected(self, e):
+        """Populate speaker path and slider values from a saved Voice Box entry."""
+        voice_id = e.value
+        self.selected_voice_id = voice_id or None
+
+        if not voice_id:
+            # User chose "Custom upload" -- leave speaker_wav as-is
+            if self.speaker_label:
+                self.speaker_label.set_text("No speaker file selected")
+            return
+
+        voice = lib.get_voice(voice_id)
+        if not voice:
+            safe_notify(f"Voice {voice_id} not found.", type="negative")
+            return
+
+        ref_path = Path(lib.get_voice_dir(voice_id)) / "reference.wav"
+        if ref_path.exists():
+            self.speaker_wav = ref_path
+            if self.speaker_label:
+                self.speaker_label.set_text(f"Using saved voice: {voice['name']}")
+        else:
+            self.speaker_wav = None
+            if self.speaker_label:
+                self.speaker_label.set_text(
+                    f"{voice['name']} has no persistent reference WAV"
+                )
+            safe_notify(
+                f"Voice '{voice['name']}' has no reference WAV on disk. "
+                f"Edit and re-save the voice, or upload a custom reference.",
+                type="warning",
+            )
+
+        # Populate advanced sliders if they exist yet
+        if self.temp_slider is not None:
+            self.temp_slider.value = voice.get("temperature", 0.667)
+        if self.length_slider is not None:
+            self.length_slider.value = voice.get("length_penalty", 1.0)
+        if self.repeat_slider is not None:
+            self.repeat_slider.value = voice.get("repetition_penalty", 5.0)
+
     # ---- Step 3: Advanced ----
     def render_advanced_step(self):
         with ui.column().classes("w-full"):
             ui.label("Advanced voice settings").classes("text-h6")
             ui.markdown("Adjust these parameters to fine‑tune the voice quality.")
 
-            self.temp_slider = ui.slider(min=0.1, max=1.0, step=0.01, value=0.667).classes("w-full")
+            # Seed slider defaults from selected voice, if any
+            default_temp = 0.667
+            default_length = 1.0
+            default_repeat = 5.0
+            if self.selected_voice_id:
+                v = lib.get_voice(self.selected_voice_id)
+                if v:
+                    default_temp = v.get("temperature", default_temp)
+                    default_length = v.get("length_penalty", default_length)
+                    default_repeat = v.get("repetition_penalty", default_repeat)
+
+            self.temp_slider = ui.slider(
+                min=0.1, max=1.0, step=0.01, value=default_temp
+            ).classes("w-full")
             ui.label().bind_text_from(
                 self.temp_slider, "value", backward=lambda v: f"Temperature: {v:.2f}"
             )
 
-            self.length_slider = ui.slider(min=0.5, max=2.0, step=0.05, value=1.0).classes("w-full")
+            self.length_slider = ui.slider(
+                min=0.5, max=2.0, step=0.05, value=default_length
+            ).classes("w-full")
             ui.label().bind_text_from(
                 self.length_slider, "value", backward=lambda v: f"Length Penalty: {v:.2f}"
             )
 
-            self.repeat_slider = ui.slider(min=1.0, max=10.0, step=0.5, value=5.0).classes("w-full")
+            self.repeat_slider = ui.slider(
+                min=1.0, max=10.0, step=0.5, value=default_repeat
+            ).classes("w-full")
             ui.label().bind_text_from(
                 self.repeat_slider, "value", backward=lambda v: f"Repetition Penalty: {v:.1f}"
             )
@@ -308,9 +385,14 @@ class WizardState:
                         f"- **Voice model**: {self.voice_model.name if self.voice_model else 'not set'}"
                     )
                 else:
-                    ui.markdown(
-                        f"- **Speaker WAV**: {self.speaker_wav.name if self.speaker_wav else 'not set'}"
-                    )
+                    if self.selected_voice_id:
+                        voice = lib.get_voice(self.selected_voice_id)
+                        voice_name = voice["name"] if voice else "(unknown)"
+                        ui.markdown(f"- **Voice**: {voice_name} (from Voice Box)")
+                    else:
+                        ui.markdown(
+                            f"- **Speaker WAV**: {self.speaker_wav.name if self.speaker_wav else 'not set'}"
+                        )
                 if self.temp_slider:
                     ui.markdown(f"- **Temperature**: {self.temp_slider.value}")
                 if self.length_slider:

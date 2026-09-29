@@ -65,9 +65,13 @@ async def main_page():
             dark_btn.icon = "dark_mode"
         # Update notification panel text colors
         update_notification_panel()
-        # Update settings toggle if it exists
+        # Update settings toggle if it exists and is still attached
         if hasattr(state, "_settings_dark_toggle") and state._settings_dark_toggle is not None:
-            state._settings_dark_toggle.value = enabled
+            try:
+                state._settings_dark_toggle.value = enabled
+            except RuntimeError:
+                # Toggle was deleted (user navigated away from Settings)
+                state._settings_dark_toggle = None
 
     def toggle_dark_mode():
         new_mode = not state.get_dark_mode()
