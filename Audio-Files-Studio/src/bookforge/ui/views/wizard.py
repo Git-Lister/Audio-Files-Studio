@@ -39,6 +39,8 @@ class WizardState:
         self.speaker_label: ui.label | None = None
         self.selected_voice_id: str | None = None
         self.voice_dropdown: ui.select | None = None
+        self.speaker_wavs: list[Path] = []
+        self.combine_btn: ui.button | None = None
 
         # Advanced
         self.temp_slider: ui.slider | None = None
@@ -233,21 +235,40 @@ class WizardState:
                     self.voice_dropdown = ui.select(
                         label="Use a saved voice",
                         options=voice_options,
-                        value="",
+                        value=self.selected_voice_id or "",
                         on_change=self.on_voice_selected,
                     ).classes("w-full")
 
-                    # --- Reference status label ---
-                    self.speaker_label = ui.label("No speaker file selected").classes(
+                    # --- Reference status label (seeded from state) ---
+                    if self.selected_voice_id:
+                        v = lib.get_voice(self.selected_voice_id)
+                        initial_label = (
+                            f"Using saved voice: {v['name']}"
+                            if v
+                            else "No speaker file selected"
+                        )
+                    elif self.speaker_wav:
+                        initial_label = f"Using uploaded file: {self.speaker_wav.name}"
+                    else:
+                        initial_label = "No speaker file selected"
+
+                    self.speaker_label = ui.label(initial_label).classes(
                         "text-caption text-grey"
                     )
 
                     # --- Custom upload (fallback) ---
                     ui.upload(
-                        label="Or upload a custom reference WAV",
+                        label="Or upload custom reference WAVs (multiple allowed)",
                         on_upload=self.on_speaker_upload,
                         auto_upload=True,
+                        multiple=True,
                     ).classes("w-full")
+
+                    # Combine button -- hidden until >1 file is uploaded
+                    self.combine_btn = ui.button(
+                        "Combine uploaded WAVs", on_click=self.combine_speaker_wavs
+                    ).props("flat color=primary")
+                    self.combine_btn.visible = len(self.speaker_wavs) > 1
 
             with ui.row().classes("q-mt-md"):
                 ui.button("Back", on_click=lambda: self.go_to_step(1)).props("flat")
@@ -255,6 +276,7 @@ class WizardState:
 
     def on_speaker_upload(self, e):
         self.speaker_event = e
+        self.selected_voice_id = None
         name = getattr(e.file, "name", "speaker.wav") if hasattr(e, "file") else "speaker.wav"
         if self.speaker_label:
             self.speaker_label.set_text(f"✅ {name}")
@@ -266,9 +288,79 @@ class WizardState:
             bytes_data, fname = await extract_upload_bytes(e)
             temp_path = Path("temp") / fname
             temp_path.write_bytes(bytes_data)
-            self.speaker_wav = temp_path
+            self.speaker_wavs.append(temp_path)
+            self.speaker_wav = temp_path  # last uploaded is active
+            count = len(self.speaker_wavs)
+            if self.speaker_label:
+                if count == 1:
+                    self.speaker_label.set_text(f"Using uploaded file: {temp_path.name}")
+                else:
+                    self.speaker_label.set_text(
+                        f"{count} files uploaded; using: {temp_path.name}"
+                    )
+            if self.combine_btn is not None:
+                try:
+                    self.combine_btn.visible = count > 1
+                except RuntimeError:
+                    pass
         except Exception as e:
             safe_notify(f"Failed to save speaker file: {e}", type="negative")
+
+    async def combine_speaker_wavs(self):
+        """Concatenate all uploaded speaker WAVs into one, set as active."""
+        if len(self.speaker_wavs) < 2:
+            safe_notify("Need at least two WAVs to combine.", type="warning")
+            return
+
+        import subprocess
+
+        list_file = Path("temp") / "speaker_concat_list.txt"
+        list_file.parent.mkdir(exist_ok=True)
+        with open(list_file, "w") as f:
+            for wav in self.speaker_wavs:
+                f.write(f"file '{wav.absolute()}'\n")
+
+        combined_path = Path("temp") / "combined_speaker.wav"
+        try:
+            await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "ffmpeg",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(list_file),
+                    "-ar",
+                    "22050",
+                    "-ac",
+                    "1",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(combined_path),
+                    "-y",
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as ex:
+            safe_notify(
+                f"Combine failed: {ex.stderr.decode(errors='ignore')[:200]}",
+                type="negative",
+            )
+            return
+
+        self.speaker_wavs = [combined_path]
+        self.speaker_wav = combined_path
+        if self.speaker_label:
+            self.speaker_label.set_text("Using combined WAV")
+        if self.combine_btn is not None:
+            try:
+                self.combine_btn.visible = False
+            except RuntimeError:
+                pass
+        safe_notify("Combined speaker WAVs into one file.", type="positive")
 
     def on_voice_selected(self, e):
         """Populate speaker path and slider values from a saved Voice Box entry."""
@@ -443,11 +535,20 @@ class WizardState:
 
         xtts_kwargs = {}
         if self.backend == "xtts":
+            voice_pitch = 0.0
+            voice_rate = 1.0
+            if self.selected_voice_id:
+                v = lib.get_voice(self.selected_voice_id)
+                if v:
+                    voice_pitch = v.get("pitch", 0.0)
+                    voice_rate = v.get("rate", 1.0)
             xtts_kwargs = {
-                "temperature": self.temp_slider.value if self.temp_slider else 0.667,
-                "length_penalty": self.length_slider.value if self.length_slider else 1.0,
-                "repetition_penalty": self.repeat_slider.value if self.repeat_slider else 5.0,
+                "temperature": float(self.temp_slider.value) if self.temp_slider else 0.667,
+                "length_penalty": float(self.length_slider.value) if self.length_slider else 1.0,
+                "repetition_penalty": float(self.repeat_slider.value) if self.repeat_slider else 5.0,
                 "language": "en",
+                "pitch": float(voice_pitch),
+                "rate": float(voice_rate),
             }
 
         from bookforge.tts.factory import get_backend

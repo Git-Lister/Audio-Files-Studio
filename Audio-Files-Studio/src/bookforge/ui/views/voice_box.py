@@ -159,7 +159,14 @@ def view(switch_to_vocalizer_callback=None):
                 with open(temp_zip, "wb") as f:
                     f.write(content)
                 new_id = lib.import_voice(temp_zip)
-                safe_notify(f"Imported voice with ID {new_id}", type="positive")
+                if lib.get_preview_path(new_id).exists():
+                    safe_notify(f"Imported voice '{new_id}' with preview.", type="positive")
+                else:
+                    safe_notify(
+                        f"Imported voice with ID {new_id}. "
+                        f"No preview in the archive -- edit and save the voice to bake one.",
+                        type="warning",
+                    )
                 dialog.close()
                 refresh()
             except Exception as err:

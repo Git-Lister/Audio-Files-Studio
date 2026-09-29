@@ -416,11 +416,45 @@ class PipelineState:
                 times.append(times[-1] + duration)
             except Exception:
                 times.append(times[-1] + 60.0)
+
+        # Get total duration from book.wav for the final chapter's END
+        try:
+            total_result = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(book_wav),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            total_duration = float(total_result.stdout.strip())
+        except Exception:
+            # Fall back to last computed time + 60s buffer
+            total_duration = times[-1] + 60.0
+
         chapter_file = proc.output_dir / "chapters.txt"
-        with chapter_file.open("w") as f:
-            for i, (title, start) in enumerate(zip(chapter_titles, times)):
-                f.write(f"CHAPTER{i + 1:02d}={start:.3f}\n")
-                f.write(f"CHAPTER{i + 1:02d}NAME={title}\n")
+        with chapter_file.open("w", encoding="utf-8") as f:
+            f.write(";FFMETADATA1\n")
+            for i, title in enumerate(chapter_titles):
+                start_ms = int(times[i] * 1000)
+                if i + 1 < len(times):
+                    end_ms = int(times[i + 1] * 1000)
+                else:
+                    end_ms = int(total_duration * 1000)
+                f.write("[CHAPTER]\n")
+                f.write("TIMEBASE=1/1000\n")
+                f.write(f"START={start_ms}\n")
+                f.write(f"END={end_ms}\n")
+                f.write(f"title={title}\n")
+                f.write("\n")
         m4b_path = proc.output_dir / "book.m4b"
         try:
             await asyncio.to_thread(
@@ -429,8 +463,12 @@ class PipelineState:
                     "ffmpeg",
                     "-i",
                     str(book_wav),
+                    "-f",
+                    "ffmetadata",
                     "-i",
                     str(chapter_file),
+                    "-map",
+                    "0:a",
                     "-map_metadata",
                     "1",
                     "-map_chapters",
@@ -446,6 +484,12 @@ class PipelineState:
                 capture_output=True,
             )
             safe_notify(f"M4B exported: {m4b_path.name}", type="positive")
+        except subprocess.CalledProcessError as e:
+            stderr_text = e.stderr.decode(errors="ignore") if e.stderr else "(no stderr)"
+            safe_notify(
+                f"M4B export failed (exit {e.returncode}): {stderr_text[:300]}",
+                type="negative",
+            )
         except Exception as e:
             safe_notify(f"M4B export failed: {e}", type="negative")
 

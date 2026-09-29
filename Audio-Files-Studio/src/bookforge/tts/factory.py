@@ -48,6 +48,9 @@ def get_backend(
                 "repetition_penalty",
                 "top_p",
                 "top_k",
+                "pitch",
+                "rate",
+                "num_beams",
                 "retries",
                 "retry_delay",
             ]

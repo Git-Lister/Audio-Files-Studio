@@ -235,6 +235,9 @@ def export_voice(voice_id: str, zip_path: Path) -> None:
         ref_path = voice.get("reference_wav_path")
         if ref_path and Path(ref_path).exists():
             zf.write(ref_path, arcname="reference.wav")
+        preview_path = get_preview_path(voice_id)
+        if preview_path.exists():
+            zf.write(preview_path, arcname="preview.wav")
     with open(zip_path, "wb") as f:
         f.write(zip_buffer.getvalue())
 
@@ -243,17 +246,30 @@ def import_voice(zip_path: Path) -> str:
     with zipfile.ZipFile(zip_path, "r") as zf:
         with zf.open("voice.json") as f:
             data = json.load(f)
-        ref_wav = None
+        new_id = str(uuid.uuid4())
+        user_dir = USER_VOICES_DIR / new_id
+        user_dir.mkdir(parents=True, exist_ok=True)
+
+        # Extract reference.wav if present
         try:
             with zf.open("reference.wav") as f:
                 ref_data = f.read()
-                new_id = str(uuid.uuid4())
-                user_dir = USER_VOICES_DIR / new_id
-                user_dir.mkdir(parents=True, exist_ok=True)
                 ref_wav_path = user_dir / "reference.wav"
                 with open(ref_wav_path, "wb") as out:
                     out.write(ref_data)
                 data["reference_wav_path"] = str(ref_wav_path)
         except KeyError:
             pass
+
+        # Extract preview.wav if present
+        try:
+            with zf.open("preview.wav") as f:
+                preview_data = f.read()
+                preview_path = get_preview_path(new_id)
+                preview_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(preview_path, "wb") as out:
+                    out.write(preview_data)
+        except KeyError:
+            pass
+
         return add_voice(data)

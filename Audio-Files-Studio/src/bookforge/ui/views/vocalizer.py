@@ -342,13 +342,13 @@ def view(switch_to_gallery_callback=None):
 
     def get_current_params():
         return {
-            "temperature": temp_slider.value,
-            "length_penalty": length_slider.value,
-            "repetition_penalty": repeat_slider.value,
-            "top_p": top_p_slider.value,
+            "temperature": float(temp_slider.value),
+            "length_penalty": float(length_slider.value),
+            "repetition_penalty": float(repeat_slider.value),
+            "top_p": float(top_p_slider.value),
             "top_k": int(top_k_slider.value or 0),
-            "pitch": pitch_slider.value,
-            "rate": rate_slider.value,
+            "pitch": float(pitch_slider.value),
+            "rate": float(rate_slider.value),
             "normalize": normalize_check.value,
             "language": "en",
             "preset_name": "calm_longform",
@@ -590,32 +590,37 @@ def view(switch_to_gallery_callback=None):
                 ui.label("Voice Character (Radar)").classes("text-h6 text-bold")
                 ui.markdown("_These sliders control the overall personality of the voice._")
 
+                temp_label = ui.label("Expressiveness (temp)").classes("text-caption")
                 temp_slider = ui.slider(min=0.1, max=1.0, step=0.01, value=0.667).classes("w-full")
-                ui.label().bind_text_from(
+                temp_label.bind_text_from(
                     temp_slider, "value", backward=lambda v: f"Expressiveness (temp): {v:.2f}"
                 )
                 temp_slider.on_value_change(update_radar_chart)
 
+                length_label = ui.label("Speed (len pen)").classes("text-caption")
                 length_slider = ui.slider(min=0.5, max=2.0, step=0.05, value=1.0).classes("w-full")
-                ui.label().bind_text_from(
+                length_label.bind_text_from(
                     length_slider, "value", backward=lambda v: f"Speed (len pen): {v:.2f}"
                 )
                 length_slider.on_value_change(update_radar_chart)
 
+                repeat_label = ui.label("Stability (rep pen)").classes("text-caption")
                 repeat_slider = ui.slider(min=1.0, max=10.0, step=0.5, value=5.0).classes("w-full")
-                ui.label().bind_text_from(
+                repeat_label.bind_text_from(
                     repeat_slider, "value", backward=lambda v: f"Stability (rep pen): {v:.1f}"
                 )
                 repeat_slider.on_value_change(update_radar_chart)
 
+                pitch_label = ui.label("Warmth (pitch)").classes("text-caption")
                 pitch_slider = ui.slider(min=-5, max=5, step=0.5, value=0).classes("w-full")
-                ui.label().bind_text_from(
+                pitch_label.bind_text_from(
                     pitch_slider, "value", backward=lambda v: f"Warmth (pitch): {v:.1f}"
                 )
                 pitch_slider.on_value_change(update_radar_chart)
 
+                rate_label = ui.label("Pacing (rate)").classes("text-caption")
                 rate_slider = ui.slider(min=0.5, max=2.0, step=0.05, value=1.0).classes("w-full")
-                ui.label().bind_text_from(
+                rate_label.bind_text_from(
                     rate_slider, "value", backward=lambda v: f"Pacing (rate): {v:.2f}"
                 )
                 rate_slider.on_value_change(update_radar_chart)
@@ -725,7 +730,16 @@ async def generate_preview(text: str, params: dict, ref_wav_path: Optional[Path]
             k: v
             for k, v in params.items()
             if k
-            in ["temperature", "length_penalty", "repetition_penalty", "top_p", "top_k", "language"]
+            in [
+                "temperature",
+                "length_penalty",
+                "repetition_penalty",
+                "top_p",
+                "top_k",
+                "language",
+                "pitch",
+                "rate",
+            ]
         },
     )
 

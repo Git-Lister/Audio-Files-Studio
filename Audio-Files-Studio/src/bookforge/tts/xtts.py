@@ -106,6 +106,9 @@ class XTTSBackend(TTSBackend):
         repetition_penalty: float = 5.0,
         top_p: float = 0.8,
         top_k: int = 50,
+        pitch: float = 0.0,
+        rate: float = 1.0,
+        num_beams: int = 3,
         retries: int = 3,
         retry_delay: float = 1.0,
     ) -> None:
@@ -115,11 +118,15 @@ class XTTSBackend(TTSBackend):
         self._device = device
         self._model_name = model_name
         self._language = language
-        self._temperature = temperature
-        self._length_penalty = length_penalty
-        self._repetition_penalty = repetition_penalty
-        self._top_p = top_p
-        self._top_k = top_k
+        # Cast to explicit types; NiceGUI/JSON round-trips can strip the decimal.
+        self._temperature = float(temperature)
+        self._length_penalty = float(length_penalty)
+        self._repetition_penalty = float(repetition_penalty)
+        self._top_p = float(top_p)
+        self._top_k = int(top_k)
+        self._pitch = float(pitch)
+        self._rate = float(rate)
+        self._num_beams = int(num_beams)
         self._retries = retries
         self._retry_delay = retry_delay
 
@@ -182,15 +189,23 @@ class XTTSBackend(TTSBackend):
         self._postprocess_audio(out_path)
 
     def _postprocess_audio(self, file_path: Path) -> None:
-        """Apply high-pass filter and normalize peak to -3dB."""
+        """Apply high-pass filter, optional pitch shift, and normalize peak to -3dB."""
         try:
             tmp = file_path.parent / f"{file_path.stem}_tmp.wav"
+            filters = ["highpass=f=80"]
+            if self._pitch != 0.0:
+                pitch_factor = 2 ** (self._pitch / 12.0)
+                filters.append(f"asetrate=24000*{pitch_factor:.6f}")
+                filters.append("aresample=24000")
+                filters.append(f"atempo={1.0 / pitch_factor:.6f}")
+            filters.append("volume=3dB")
+            af = ",".join(filters)
             cmd = [
                 "ffmpeg",
                 "-i",
                 str(file_path),
                 "-af",
-                "highpass=f=80, volume=3dB",
+                af,
                 str(tmp),
                 "-y",
             ]
@@ -221,6 +236,8 @@ class XTTSBackend(TTSBackend):
             "repetition_penalty": self._repetition_penalty,
             "top_p": self._top_p,
             "top_k": self._top_k,
+            "speed": self._rate,
+            "num_beams": self._num_beams,
         }
         if self._speaker_wav:
             kwargs["speaker_wav"] = self._speaker_wav
