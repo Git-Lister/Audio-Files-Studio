@@ -1,1 +1,4 @@
-".nicegui/" 
+
+.nicegui/
+__pycache__/
+*.pyc
