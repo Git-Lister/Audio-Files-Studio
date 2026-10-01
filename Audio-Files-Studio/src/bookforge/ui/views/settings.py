@@ -19,12 +19,10 @@ def view(on_dark_toggle=None):
         ui.label("⚙️ Settings").classes("text-h5 q-mb-md")
         ui.markdown("Manage your voice presets and application preferences.")
 
-        # ---- Dark mode (synchronized with header) ----
+        # ---- Dark mode (reads current state on render; writes via callback) ----
         with ui.row().classes("items-center gap-2 q-mb-md"):
             ui.label("Dark mode").classes("text-caption")
             dark_toggle = ui.switch(value=state.get_dark_mode())
-            # Store reference so main.py can update it
-            state._settings_dark_toggle = dark_toggle
             dark_toggle.on_value_change(
                 lambda e: on_dark_toggle(e.value) if on_dark_toggle else None
             )

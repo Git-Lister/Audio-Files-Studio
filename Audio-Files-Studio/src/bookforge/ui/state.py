@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nicegui import app, ui
+from nicegui import app
 
 from bookforge.incremental_processor import IncrementalProcessor
 
@@ -23,7 +23,6 @@ def set_state(key: str, value: Any) -> None:
 
 
 # ---- Processor stored in module (NOT in app.storage) ----
-_settings_dark_toggle = None
 _processor: IncrementalProcessor | None = None
 
 
@@ -61,7 +60,6 @@ def get_dark_mode() -> bool:
 
 def set_dark_mode(enabled: bool) -> None:
     set_state("dark_mode", enabled)
-    ui.dark_mode(enabled)
 
 
 def get_expert_mode() -> bool:

@@ -120,10 +120,27 @@ class WizardState:
         with ui.column().classes("w-full"):
             ui.label("Select your book").classes("text-h6")
             ui.markdown("Choose a file from the **books/** folder or upload a new one.")
+
+            book_options = [""] + sorted(
+                [p.name for p in Path("books").glob("*.txt") if p.is_file()]
+            )
+
+            # Preserve prior selection when re-rendering
+            initial_book_value = ""
+            if self.book_path and self.book_path.parent.name == "books":
+                if self.book_path.name in book_options:
+                    initial_book_value = self.book_path.name
+
+            # If a file was uploaded (not selected), show a status label
+            if self.book_path and self.book_path.parent.name != "books":
+                ui.label(
+                    f"Uploaded file in use: {self.book_path.name}"
+                ).classes("text-caption text-positive")
+
             book_select = ui.select(
                 label="Book from books/",
-                options=[""] + sorted([p.name for p in Path("books").glob("*.txt") if p.is_file()]),
-                value="",
+                options=book_options,
+                value=initial_book_value,
             ).classes("w-full")
             ui.tooltip("Select a .txt file from the books folder")
 
@@ -514,7 +531,10 @@ class WizardState:
             errors.append("Please enter a project name.")
         if errors:
             for err in errors:
-                safe_notify(err, type="negative")
+                try:
+                    safe_notify(err, type="negative")
+                except RuntimeError:
+                    pass
             return
 
         if self.book_path is None and self.book_event is not None:
@@ -523,11 +543,17 @@ class WizardState:
                 self.book_path = Path("temp") / book_filename
                 self.book_path.write_bytes(book_bytes)
             except Exception as e:
-                safe_notify(f"Failed to save uploaded book: {e}", type="negative")
+                try:
+                    safe_notify(f"Failed to save uploaded book: {e}", type="negative")
+                except RuntimeError:
+                    pass
                 return
 
         if self.book_path is None:
-            safe_notify("Book path is missing.", type="negative")
+            try:
+                safe_notify("Book path is missing.", type="negative")
+            except RuntimeError:
+                pass
             return
 
         sanitised = sanitise_filename(name)
@@ -562,7 +588,10 @@ class WizardState:
                 **xtts_kwargs,
             )
         except Exception as e:
-            safe_notify(f"Failed to initialise TTS backend: {e}", type="negative")
+            try:
+                safe_notify(f"Failed to initialise TTS backend: {e}", type="negative")
+            except RuntimeError:
+                pass
             return
 
         from bookforge.incremental_processor import IncrementalProcessor
@@ -585,9 +614,16 @@ class WizardState:
         proc.backend_name = self.backend
         set_processor(proc)
 
-        safe_notify(f"Project '{sanitised}' created!", type="positive")
+        try:
+            safe_notify(f"Project '{sanitised}' created!", type="positive")
+        except RuntimeError:
+            # Client was deleted (user navigated away during backend load).
+            pass
         if self.on_switch_to_pipeline:
-            self.on_switch_to_pipeline("prepare")
+            try:
+                self.on_switch_to_pipeline("prepare")
+            except RuntimeError:
+                pass
         else:
             from bookforge.ui import state
 

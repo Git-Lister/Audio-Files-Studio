@@ -341,6 +341,9 @@ def view(switch_to_gallery_callback=None):
     # ---- State ----
     voice_id = None
     uploaded_ref_path: Optional[Path] = None
+    uploaded_refs: list[Path] = []
+    combine_ref_btn: ui.button | None = None
+    clear_refs_btn: ui.button | None = None
 
     # ---- UI controls (initialised later) ----
     name_input = None
@@ -386,6 +389,7 @@ def view(switch_to_gallery_callback=None):
             ref_status.set_text(f"Reference: {Path(ref_path).name}")
         else:
             ref_status.set_text("No reference uploaded")
+        uploaded_refs.clear()
         update_radar_chart()
 
     def reset_to_loaded():
@@ -397,7 +401,7 @@ def view(switch_to_gallery_callback=None):
         else:
             safe_notify("No voice loaded.", type="warning")
 
-    def reset_to_system_defaults():
+    def reset_to_system_defaults(notify: bool = True):
         default_voice = {
             "temperature": 0.667,
             "length_penalty": 1.0,
@@ -409,7 +413,8 @@ def view(switch_to_gallery_callback=None):
             "normalize": False,
         }
         set_sliders_from_voice(default_voice)
-        safe_notify("Reset to system defaults.", type="info")
+        if notify:
+            safe_notify("Reset to system defaults.", type="info")
 
     def get_current_params():
         return {
@@ -453,16 +458,87 @@ def view(switch_to_gallery_callback=None):
         nonlocal uploaded_ref_path
         temp_dir = Path("temp")
         temp_dir.mkdir(exist_ok=True)
-        unique_name = f"ref_{uuid.uuid4().hex[:8]}.wav"
+        unique_name = f"ref_{uuid.uuid4().hex[:8]}_{e.file.name}"
         ref_path = temp_dir / unique_name
         content = await e.file.read()
         with open(ref_path, "wb") as f:
             f.write(content)
-        uploaded_ref_path = ref_path
-        ref_status.set_text(f"Reference: {e.file.name} (uploaded)")
-        safe_notify("Reference WAV uploaded.", type="positive")
-        if RADAR_DEBUG:
-            print(f"📁 Uploaded reference to: {ref_path}")
+        uploaded_refs.append(ref_path)
+        # If not combined, the first uploaded file is the active reference.
+        if uploaded_ref_path is None or len(uploaded_refs) == 1:
+            uploaded_ref_path = uploaded_refs[0]
+        update_ref_ui()
+        safe_notify(f"Reference '{e.file.name}' uploaded.", type="positive")
+
+    def update_ref_ui():
+        """Refresh the Reference WAV status label and combine/clear button visibility."""
+        n = len(uploaded_refs)
+        if n == 0:
+            ref_status.set_text("No reference uploaded")
+        elif n == 1:
+            ref_status.set_text(f"Reference: {uploaded_refs[0].name} (uploaded)")
+        else:
+            active = uploaded_ref_path.name if uploaded_ref_path else "(none)"
+            ref_status.set_text(f"{n} files uploaded; active: {active}")
+        try:
+            if combine_ref_btn is not None:
+                combine_ref_btn.visible = n > 1
+            if clear_refs_btn is not None:
+                clear_refs_btn.visible = n > 0
+        except RuntimeError:
+            pass
+
+    async def combine_ref_wavs():
+        """Concatenate all uploaded reference WAVs into one, set as active."""
+        nonlocal uploaded_ref_path
+        if len(uploaded_refs) < 2:
+            safe_notify("Need at least two files to combine.", type="warning")
+            return
+
+        import subprocess
+
+        list_file = Path("temp") / "vocalizer_ref_concat_list.txt"
+        list_file.parent.mkdir(exist_ok=True)
+        with open(list_file, "w") as f:
+            for wav in uploaded_refs:
+                f.write(f"file '{wav.absolute()}'\n")
+
+        combined_path = Path("temp") / f"combined_ref_{uuid.uuid4().hex[:8]}.wav"
+        try:
+            await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "ffmpeg",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", str(list_file),
+                    "-ar", "24000",
+                    "-ac", "1",
+                    "-c:a", "pcm_s16le",
+                    str(combined_path),
+                    "-y",
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as ex:
+            err = ex.stderr.decode(errors="ignore")[:200] if ex.stderr else "(no stderr)"
+            safe_notify(f"Combine failed: {err}", type="negative")
+            return
+
+        uploaded_refs.clear()
+        uploaded_refs.append(combined_path)
+        uploaded_ref_path = combined_path
+        update_ref_ui()
+        safe_notify("Combined reference WAVs into one file.", type="positive")
+
+    def clear_ref_wavs():
+        """Remove all uploaded references (keeps the saved voice's reference untouched)."""
+        nonlocal uploaded_ref_path
+        uploaded_refs.clear()
+        uploaded_ref_path = None
+        update_ref_ui()
+        safe_notify("Cleared uploaded references.", type="info")
 
     async def generate_preview_action():
         try:
@@ -725,17 +801,19 @@ def view(switch_to_gallery_callback=None):
                 ui.label("Advanced Sampling").classes("text-h6 text-bold q-mt-md")
                 ui.markdown("_Fine‑tune the sampling strategy. These are not shown on the radar._")
 
+                top_p_label = ui.label("Top‑P (nucleus)").classes("text-caption")
                 top_p_slider = ui.slider(min=0.0, max=1.0, step=0.01, value=0.8).classes("w-full")
                 with top_p_slider:
                     ui.tooltip("Sampling diversity. Lower = conservative, picks the safest options. Higher = more varied output. Safe to leave at default.")
-                ui.label().bind_text_from(
+                top_p_label.bind_text_from(
                     top_p_slider, "value", backward=lambda v: f"Top‑P (nucleus): {v:.2f}"
                 )
 
+                top_k_label = ui.label("Top‑K (diversity)").classes("text-caption")
                 top_k_slider = ui.slider(min=0, max=100, step=1, value=50).classes("w-full")
                 with top_k_slider:
                     ui.tooltip("Candidate pool size at each generation step. Lower = more focused. Higher = more exploratory. Safe to leave at default.")
-                ui.label().bind_text_from(
+                top_k_label.bind_text_from(
                     top_k_slider, "value", backward=lambda v: f"Top‑K (diversity): {int(v)}"
                 )
 
@@ -743,13 +821,25 @@ def view(switch_to_gallery_callback=None):
 
                 ui.label("Reference WAV").classes("text-h6 q-mt-md")
                 ui.upload(
-                    label="Upload reference WAV", auto_upload=True, on_upload=handle_upload
+                    label="Upload reference WAV(s) -- multiple allowed",
+                    auto_upload=True,
+                    on_upload=handle_upload,
+                    multiple=True,
                 ).classes("w-full")
                 ref_status = ui.label("No reference uploaded").classes("text-caption text-grey")
+                with ui.row().classes("gap-2"):
+                    combine_ref_btn = ui.button(
+                        "Combine uploaded", on_click=combine_ref_wavs
+                    ).props("flat color=primary size=sm")
+                    combine_ref_btn.visible = False
+                    clear_refs_btn = ui.button(
+                        "Clear", on_click=clear_ref_wavs
+                    ).props("flat color=negative size=sm")
+                    clear_refs_btn.visible = False
 
                 with ui.row().classes("q-mt-md"):
                     ui.button("Reset to Loaded", on_click=reset_to_loaded).props("flat")
-                    ui.button("System Defaults", on_click=reset_to_system_defaults).props("flat")
+                    ui.button("System Defaults", on_click=lambda: reset_to_system_defaults()).props("flat")
 
             with ui.column().classes("w-2/3"):
                 with ui.card().classes("w-full q-mb-md"):
@@ -795,7 +885,7 @@ def view(switch_to_gallery_callback=None):
                 set_sliders_from_voice(voice)
             app.storage.general["edit_voice_id"] = None
         else:
-            reset_to_system_defaults()
+            reset_to_system_defaults(notify=False)
 
     return container
 

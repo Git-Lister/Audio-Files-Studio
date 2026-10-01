@@ -41,6 +41,27 @@ async def main_page():
         .q-card { border-radius: 12px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important; }
         .dark .text-grey-8 { color: #c0c0c0 !important; }
         .dark .text-grey-6 { color: #a0a0a0 !important; }
+        .body--dark {
+            background-color: #121212 !important;
+            color: #e0e0e0 !important;
+        }
+        .body--dark .q-page,
+        .body--dark .q-page-container,
+        .body--dark .q-layout {
+            background-color: #121212 !important;
+        }
+        .body--dark .q-card {
+            background-color: #1e1e1e !important;
+            color: #e0e0e0 !important;
+        }
+        .body--dark .q-field__control,
+        .body--dark .q-field__native,
+        .body--dark .q-textarea__native {
+            color: #e0e0e0 !important;
+        }
+        .body--dark .q-field--outlined .q-field__control:before {
+            border-color: #555 !important;
+        }
     </style>
     """)
 
@@ -52,43 +73,30 @@ async def main_page():
     state.set_pipeline_step(None)
 
     # ---- Dark mode management ----
+    # Create the DarkMode element ONCE. Its .value is toggled by apply_dark_mode.
+    initial_dark_mode = state.get_dark_mode()
+    dark_mode_element = ui.dark_mode(value=initial_dark_mode)
+
     def apply_dark_mode(enabled: bool):
         """Apply dark mode to all UI elements."""
         state.set_dark_mode(enabled)
-        ui.dark_mode(enabled)
+        dark_mode_element.value = enabled
         # Update sidebar background
         if enabled:
             drawer.classes(remove="bg-blue-grey-1", add="bg-grey-9")
-            dark_btn.icon = "light_mode"
         else:
             drawer.classes(remove="bg-grey-9", add="bg-blue-grey-1")
-            dark_btn.icon = "dark_mode"
         # Update notification panel text colors
         update_notification_panel()
-        # Update settings toggle if it exists and is still attached
-        if hasattr(state, "_settings_dark_toggle") and state._settings_dark_toggle is not None:
-            try:
-                state._settings_dark_toggle.value = enabled
-            except RuntimeError:
-                # Toggle was deleted (user navigated away from Settings)
-                state._settings_dark_toggle = None
 
-    def toggle_dark_mode():
-        new_mode = not state.get_dark_mode()
-        apply_dark_mode(new_mode)
-
-    # Initial dark mode
-    dark_mode = state.get_dark_mode()
-    ui.dark_mode(dark_mode)
+    # Initial drawer background from saved state
+    dark_mode = initial_dark_mode
 
     # ---- Header ----
     with ui.header().classes("bg-primary text-white"):
         ui.button(icon="menu", on_click=lambda: drawer.toggle()).props("flat color=white")
         ui.label("📚 Audio‑Files Studio").classes("text-h5")
         project_badge = ui.label("").classes("text-caption text-gold q-ml-auto")
-        dark_btn = ui.button(
-            icon="dark_mode" if not dark_mode else "light_mode", on_click=toggle_dark_mode
-        ).props("flat color=white")
 
     # ---- Sidebar (dynamic background) ----
     drawer = ui.left_drawer().classes("bg-blue-grey-1")
@@ -107,13 +115,13 @@ async def main_page():
             ui.button("Projects", icon="folder", on_click=lambda: navigate("projects")).props(
                 "flat align=left"
             )
-            ui.button("Voice Box (Gallery)", icon="library_books", on_click=lambda: navigate("voice_box")).props(
-                "flat align=left"
-            )
+            ui.button(
+                "Voice Box (Gallery)", icon="library_books", on_click=lambda: navigate("voice_box")
+            ).props("flat align=left")
 
-            ui.button("Vocalizer (Creator)", icon="edit", on_click=lambda: navigate("vocalizer")).props(
-                "flat align=left"
-            )
+            ui.button(
+                "Vocalizer (Creator)", icon="edit", on_click=lambda: navigate("vocalizer")
+            ).props("flat align=left")
 
             ui.button("Settings", icon="settings", on_click=lambda: navigate("settings")).props(
                 "flat align=left"
