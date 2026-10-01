@@ -43,7 +43,7 @@ console.log("Radar script loaded");
 
     // ---- Expose drawRadarChart globally ----
     window.drawRadarChart = function(values) {
-        console.log("drawRadarChart called with", values);
+        console.log("drawRadarChart called with:", JSON.stringify(values));
         if (!canvas) {
             canvas = document.getElementById('radarChart');
             if (!canvas) {
@@ -57,6 +57,7 @@ console.log("Radar script loaded");
             canvas.addEventListener('mouseleave', handleMouseUp);
         }
         currentValues = values.map(v => Math.max(0, Math.min(1, v)));
+        console.log("currentValues after update:", JSON.stringify(currentValues));
         draw();
     };
 
@@ -186,12 +187,10 @@ console.log("Radar script loaded");
     }
 
     function sendDragData(axisIndex, value) {
-        const input = document.getElementById('radar_drag_input');
-        if (input) {
-            input.value = JSON.stringify({axis: axisIndex, value: value});
-            input.dispatchEvent(new Event('change'));
+        if (typeof emitEvent === 'function') {
+            emitEvent('radar_drag', {axis: axisIndex, value: value});
         } else {
-            console.warn('Radar: hidden input not found');
+            console.warn('Radar: emitEvent not available');
         }
     }
 
@@ -240,6 +239,44 @@ RADAR_AXES = [
     ("Pacing", "rate", 0.5, 2.0),
 ]
 
+# Named starting points for non-technical users.
+# Each preset sets the 5 character sliders.
+SLIDER_PRESETS = {
+    "match": {
+        "label": "Match Original",
+        "tooltip": "Closest to the uploaded reference. Calm, steady, faithful.",
+        "values": {
+            "temperature": 0.3,
+            "length_penalty": 1.0,
+            "repetition_penalty": 5.0,
+            "pitch": 0.0,
+            "rate": 1.0,
+        },
+    },
+    "calm": {
+        "label": "Calm Narration",
+        "tooltip": "Slightly slower, more measured. Good for long-form narration.",
+        "values": {
+            "temperature": 0.5,
+            "length_penalty": 1.2,
+            "repetition_penalty": 6.0,
+            "pitch": 0.0,
+            "rate": 0.9,
+        },
+    },
+    "dramatic": {
+        "label": "Dramatic Reading",
+        "tooltip": "More expressive, more varied. Good for fiction, poetry, character work.",
+        "values": {
+            "temperature": 0.85,
+            "length_penalty": 0.8,
+            "repetition_penalty": 4.0,
+            "pitch": 0.0,
+            "rate": 1.1,
+        },
+    },
+}
+
 
 def param_to_radar(param_name: str, value: float) -> float:
     for label, name, min_val, max_val in RADAR_AXES:
@@ -263,9 +300,43 @@ def get_radar_values(temp, length_penalty, repetition_penalty, pitch, rate) -> l
     ]
 
 
+# Module-level registry for the currently active Vocalizer's sliders.
+# Populated by view() on each render, so the drag-event handler can reach them.
+_current_radar_sliders: dict | None = None
+
+
+def _handle_radar_drag_event(e):
+    """Handle a drag event from the radar chart's JavaScript."""
+    global _current_radar_sliders
+    if _current_radar_sliders is None:
+        return
+    try:
+        payload = e.args if hasattr(e, "args") else {}
+        axis_idx = int(payload.get("axis"))
+        new_val_0_1 = float(payload.get("value"))
+        new_val_0_1 = max(0.0, min(1.0, new_val_0_1))
+        new_param = radar_to_param(axis_idx, new_val_0_1)
+        param_name = RADAR_AXES[axis_idx][1]
+        target = _current_radar_sliders.get(param_name)
+        if target is not None:
+            try:
+                target.value = new_param
+            except RuntimeError:
+                # Slider has been deleted; ignore.
+                pass
+    except Exception as ex:
+        try:
+            safe_notify(f"Radar drag error: {ex}", type="warning")
+        except RuntimeError:
+            pass
+
+
 def view(switch_to_gallery_callback=None):
     container = ui.column().classes("w-full")
     container.switch_to_gallery = switch_to_gallery_callback  # type: ignore
+
+    # Register the radar drag event handler for this view session.
+    ui.on("radar_drag", _handle_radar_drag_event)
 
     # ---- State ----
     voice_id = None
@@ -354,6 +425,19 @@ def view(switch_to_gallery_callback=None):
             "preset_name": "calm_longform",
         }
 
+    def apply_slider_preset(preset_key: str):
+        preset = SLIDER_PRESETS.get(preset_key)
+        if preset is None:
+            return
+        v = preset["values"]
+        temp_slider.value = v["temperature"]
+        length_slider.value = v["length_penalty"]
+        repeat_slider.value = v["repetition_penalty"]
+        pitch_slider.value = v["pitch"]
+        rate_slider.value = v["rate"]
+        update_radar_chart()
+        safe_notify(f"Applied preset: {preset['label']}", type="info")
+
     def update_radar_chart():
         values = get_radar_values(
             temp_slider.value,
@@ -364,34 +448,6 @@ def view(switch_to_gallery_callback=None):
         )
         # Call with a delay to ensure canvas is ready
         ui.run_javascript(f"setTimeout(() => drawRadarChart({values}), 100)")
-
-    def check_radar_drag():
-        data = app.storage.general.get("radar_drag_data", "")
-        if data:
-            app.storage.general["radar_drag_data"] = ""
-            try:
-                parsed = json.loads(data)
-                axis_idx = parsed["axis"]
-                new_val_0_1 = parsed["value"]
-                new_val_0_1 = max(0.0, min(1.0, new_val_0_1))
-                new_param = radar_to_param(axis_idx, new_val_0_1)
-                param_name = RADAR_AXES[axis_idx][1]
-                if param_name == "temperature":
-                    temp_slider.value = new_param
-                elif param_name == "length_penalty":
-                    length_slider.value = new_param
-                elif param_name == "repetition_penalty":
-                    repeat_slider.value = new_param
-                elif param_name == "pitch":
-                    pitch_slider.value = new_param
-                elif param_name == "rate":
-                    rate_slider.value = new_param
-                if RADAR_DEBUG:
-                    safe_notify(
-                        f"Radar drag: {RADAR_AXES[axis_idx][0]} → {new_param:.3f}", type="info"
-                    )
-            except Exception as e:
-                safe_notify(f"Radar drag error: {e}", type="warning")
 
     async def handle_upload(e):
         nonlocal uploaded_ref_path
@@ -547,17 +603,26 @@ def view(switch_to_gallery_callback=None):
                 target_dir.mkdir(parents=True, exist_ok=True)
                 target = target_dir / "preview.wav"
                 shutil.copy(baked_tmp, target)
-                safe_notify(f"Voice '{data['name']}' saved with preview.", type="positive")
+                try:
+                    safe_notify(f"Voice '{data['name']}' saved with preview.", type="positive")
+                except RuntimeError:
+                    pass
             except Exception as e:
+                try:
+                    safe_notify(
+                        f"Voice '{data['name']}' saved, but preview could not be baked: {e}",
+                        type="warning",
+                    )
+                except RuntimeError:
+                    pass
+        else:
+            try:
                 safe_notify(
-                    f"Voice '{data['name']}' saved, but preview could not be baked: {e}",
+                    f"Voice '{data['name']}' saved (no reference WAV -- preview not baked).",
                     type="warning",
                 )
-        else:
-            safe_notify(
-                f"Voice '{data['name']}' saved (no reference WAV -- preview not baked).",
-                type="warning",
-            )
+            except RuntimeError:
+                pass
 
         # Clear the edit flag so the next visit starts fresh
         app.storage.general["edit_voice_id"] = None
@@ -587,11 +652,23 @@ def view(switch_to_gallery_callback=None):
 
         with ui.row().classes("w-full"):
             with ui.column().classes("w-1/3 q-pr-md"):
+                ui.label("Quick Start").classes("text-subtitle2")
+                with ui.row().classes("gap-2 q-mb-md"):
+                    for key, preset in SLIDER_PRESETS.items():
+                        btn = ui.button(
+                            preset["label"],
+                            on_click=lambda k=key: apply_slider_preset(k),
+                        ).props("flat color=primary size=sm")
+                        with btn:
+                            ui.tooltip(preset["tooltip"])
+
                 ui.label("Voice Character (Radar)").classes("text-h6 text-bold")
                 ui.markdown("_These sliders control the overall personality of the voice._")
 
                 temp_label = ui.label("Expressiveness (temp)").classes("text-caption")
                 temp_slider = ui.slider(min=0.1, max=1.0, step=0.01, value=0.667).classes("w-full")
+                with temp_slider:
+                    ui.tooltip("Low = calm, steady reading. High = dramatic, varied. For a faithful match to the original sample, keep this low.")
                 temp_label.bind_text_from(
                     temp_slider, "value", backward=lambda v: f"Expressiveness (temp): {v:.2f}"
                 )
@@ -599,6 +676,8 @@ def view(switch_to_gallery_callback=None):
 
                 length_label = ui.label("Speed (len pen)").classes("text-caption")
                 length_slider = ui.slider(min=0.5, max=2.0, step=0.05, value=1.0).classes("w-full")
+                with length_slider:
+                    ui.tooltip("Affects phrasing length. Lower = drawn-out phrases; higher = tighter, faster phrasing. (Requires a moment of processing; the effect is subtle.)")
                 length_label.bind_text_from(
                     length_slider, "value", backward=lambda v: f"Speed (len pen): {v:.2f}"
                 )
@@ -606,6 +685,8 @@ def view(switch_to_gallery_callback=None):
 
                 repeat_label = ui.label("Stability (rep pen)").classes("text-caption")
                 repeat_slider = ui.slider(min=1.0, max=10.0, step=0.5, value=5.0).classes("w-full")
+                with repeat_slider:
+                    ui.tooltip("Higher = stronger suppression of repeated words. Lower = more natural-sounding but with a risk of stutters.")
                 repeat_label.bind_text_from(
                     repeat_slider, "value", backward=lambda v: f"Stability (rep pen): {v:.1f}"
                 )
@@ -613,6 +694,8 @@ def view(switch_to_gallery_callback=None):
 
                 pitch_label = ui.label("Warmth (pitch)").classes("text-caption")
                 pitch_slider = ui.slider(min=-5, max=5, step=0.5, value=0).classes("w-full")
+                with pitch_slider:
+                    ui.tooltip("Low = deeper tone. High = brighter tone. Applies a pitch shift to the generated audio.")
                 pitch_label.bind_text_from(
                     pitch_slider, "value", backward=lambda v: f"Warmth (pitch): {v:.1f}"
                 )
@@ -620,10 +703,22 @@ def view(switch_to_gallery_callback=None):
 
                 rate_label = ui.label("Pacing (rate)").classes("text-caption")
                 rate_slider = ui.slider(min=0.5, max=2.0, step=0.05, value=1.0).classes("w-full")
+                with rate_slider:
+                    ui.tooltip("Overall speaking speed. Low = slower, High = faster.")
                 rate_label.bind_text_from(
                     rate_slider, "value", backward=lambda v: f"Pacing (rate): {v:.2f}"
                 )
                 rate_slider.on_value_change(update_radar_chart)
+
+                # Register the current sliders for the drag-event handler
+                global _current_radar_sliders
+                _current_radar_sliders = {
+                    "temperature": temp_slider,
+                    "length_penalty": length_slider,
+                    "repetition_penalty": repeat_slider,
+                    "pitch": pitch_slider,
+                    "rate": rate_slider,
+                }
 
                 ui.separator().classes("q-mt-md")
 
@@ -631,11 +726,15 @@ def view(switch_to_gallery_callback=None):
                 ui.markdown("_Fine‑tune the sampling strategy. These are not shown on the radar._")
 
                 top_p_slider = ui.slider(min=0.0, max=1.0, step=0.01, value=0.8).classes("w-full")
+                with top_p_slider:
+                    ui.tooltip("Sampling diversity. Lower = conservative, picks the safest options. Higher = more varied output. Safe to leave at default.")
                 ui.label().bind_text_from(
                     top_p_slider, "value", backward=lambda v: f"Top‑P (nucleus): {v:.2f}"
                 )
 
                 top_k_slider = ui.slider(min=0, max=100, step=1, value=50).classes("w-full")
+                with top_k_slider:
+                    ui.tooltip("Candidate pool size at each generation step. Lower = more focused. Higher = more exploratory. Safe to leave at default.")
                 ui.label().bind_text_from(
                     top_k_slider, "value", backward=lambda v: f"Top‑K (diversity): {int(v)}"
                 )
@@ -655,13 +754,6 @@ def view(switch_to_gallery_callback=None):
             with ui.column().classes("w-2/3"):
                 with ui.card().classes("w-full q-mb-md"):
                     ui.label("Voice Fingerprint").classes("text-h6")
-                    # Hidden input with explicit type and id
-                    radar_drag_input = (
-                        ui.input(value="")
-                        .props('type="hidden" id="radar_drag_input"')
-                        .bind_value_to(app.storage.general, "radar_drag_data")
-                    )
-                    # Canvas – note the id
                     ui.html("""
                     <div style="position:relative; width:100%; max-width:600px; margin:0 auto;">
                         <canvas id="radarChart" width="600" height="400"></canvas>
@@ -704,8 +796,6 @@ def view(switch_to_gallery_callback=None):
             app.storage.general["edit_voice_id"] = None
         else:
             reset_to_system_defaults()
-
-        ui.timer(0.1, check_radar_drag)
 
     return container
 
