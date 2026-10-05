@@ -17,7 +17,16 @@ from bookforge.ui.components import (
     update_notification_panel,
     update_progress_from_processor,
 )
-from bookforge.ui.views import home, pipeline, projects, settings, vocalizer, voice_box, wizard
+from bookforge.ui.views import (
+    home,
+    import_prepare,
+    pipeline,
+    projects,
+    settings,
+    vocalizer,
+    voice_box,
+    wizard,
+)
 
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
@@ -116,6 +125,11 @@ async def main_page():
                 "flat align=left"
             )
             ui.button(
+                "Import & Prepare",
+                icon="upload_file",
+                on_click=lambda: navigate("import_prepare"),
+            ).props("flat align=left")
+            ui.button(
                 "Voice Box (Gallery)", icon="library_books", on_click=lambda: navigate("voice_box")
             ).props("flat align=left")
 
@@ -162,6 +176,8 @@ async def main_page():
                 home.view(on_new_project=lambda: navigate("wizard"))
             elif view_name == "projects":
                 projects.view()
+            elif view_name == "import_prepare":
+                import_prepare.view()
             elif view_name == "voice_box":
                 voice_box.view(switch_to_vocalizer_callback=lambda: navigate("vocalizer"))
             elif view_name == "vocalizer":

@@ -41,6 +41,12 @@ RUN pip install "transformers==4.42.4"
 # Install Coqui TTS (let pip resolve compatible sub-deps)
 RUN pip install "TTS"
 
+# Install llama-cpp-python with CUDA support.
+# Prefer the cu121 prebuilt wheel; fall back to CPU-only if unavailable.
+RUN pip install llama-cpp-python \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 \
+    || pip install llama-cpp-python
+
 # Verify the stack before copying app code
 RUN python -c "import torch; print(torch.__version__)" && \
     python -c "import transformers; print(transformers.__version__)" && \

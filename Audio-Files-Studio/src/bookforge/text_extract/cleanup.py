@@ -61,8 +61,35 @@ def _strip_trailing_ws(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.split("\n"))
 
 
+def _collapse_internal_whitespace(text: str) -> str:
+    """Collapse runs of 2+ spaces to a single space within each line."""
+    return "\n".join(re.sub(r" {2,}", " ", ln) for ln in text.split("\n"))
+
+
+def _strip_urls(text: str) -> str:
+    """Remove URLs and DOIs, including spaced-out forms from PDF extraction."""
+    # Spaced-out URLs: "h t t p s : / /" — collapse them first so the main pattern can match
+    text = re.sub(r"h\s+t\s+t\s+p\s+s?\s*:\s*/\s*/\s*", "https://", text, flags=re.IGNORECASE)
+    # Standard URLs
+    text = re.sub(r"https?://\S+", "", text)
+    # DOI identifiers, both "10.xxxx/yyyy" and spaced variants
+    text = re.sub(r"\b1\s*0\s*\.\s*\d{4,5}\s*/\s*\S+", "", text)
+    # Dangling "doi.org" prefix from a URL whose scheme was removed
+    text = re.sub(r"\bdoi\.org\S*", "", text)
+    return text
+
+
+def _strip_emails(text: str) -> str:
+    """Remove email addresses."""
+    return re.sub(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b", "", text)
+
+
 def _remove_page_numbers(text: str) -> str:
-    return re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)
+    # Standalone number
+    text = re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)
+    # Two short number groups on their own line, e.g. Springer's "1 3"
+    text = re.sub(r"^\s*\d{1,2}\s+\d{1,2}\s*$", "", text, flags=re.MULTILINE)
+    return text
 
 
 def _expand_abbreviations(text: str) -> str:
@@ -74,9 +101,6 @@ def _expand_abbreviations(text: str) -> str:
         ("etc.", "et cetera"),
         ("vs.", "versus"),
         ("c.f.", "compare"),
-        ("et al.", "and others"),
-        ("ibid.", "same source"),
-        ("op. cit.", "previously cited"),
     ]
     for old, new in replacements:
         text = text.replace(old, new)
@@ -86,11 +110,26 @@ def _expand_abbreviations(text: str) -> str:
 # ---------- Tier 2 -- Structural ----------
 
 def _strip_footnote_markers(text: str) -> str:
+    # Bracketed numeric citations (kept from original)
     text = re.sub(r"\[\s*\d+(?:\s*[,-]\s*\d+)*\s*\]", "", text)
-    text = re.sub(r"(?<=[a-zA-Z])(\d{1,4})(?=[\s.,;:!?]|$)", "", text)
+    # Lowercase letter immediately followed by 1-2 digits, then whitespace/punct
+    # (avoids uppercase-prefixed tokens like R1049, B12, H2O)
+    text = re.sub(r"(?<=[a-z])(\d{1,2})(?=[\s.,;:!?]|$)", "", text)
+    # Digits following sentence punctuation
     text = re.sub(r"(?<=[.,;:!?])(\d{1,4})(?=[\s.,;:!?]|$)", "", text)
+    # "word. 1." style trailing footnote numbers
     text = re.sub(r"(?<=[a-zA-Z.!?]) (\d{1,3})\.(?=\s|$)", ".", text)
     return text
+
+
+def _strip_journal_metadata(text: str) -> str:
+    """Remove the standard journal submission metadata block from academic PDFs."""
+    # Recognise the pattern: one or more "Received/Revised/Accepted/Published online" lines
+    pattern = (
+        r"^\s*(?:Received|Revised|Accepted|Published online|Published|"
+        r"©\s*The Author|This article is licensed)\b.*$"
+    )
+    return re.sub(pattern, "", text, flags=re.MULTILINE | re.IGNORECASE)
 
 
 def _reflow_paragraphs(text: str) -> str:
@@ -127,19 +166,31 @@ def _detect_and_mark_chapters(text: str) -> str:
     return "\n".join(lines)
 
 
-def _deduplicate_running_headers(text: str) -> str:
-    """Remove short lines that repeat 3+ times across the document.
+def _mark_numbered_sections(text: str) -> str:
+    """Mark academic-style numbered section headers ('1 Introduction') as '# '."""
+    return re.sub(
+        r"^(\d{1,2})\s+([A-Z][A-Za-z,&\s\-']{3,60})$",
+        r"# \1 \2",
+        text,
+        flags=re.MULTILINE,
+    )
 
-    Best-effort. Off by default because it can remove legitimate refrains
-    or chapter titles that appear in a table of contents.
+
+def _deduplicate_running_headers(text: str) -> str:
+    """Remove short lines that repeat 5+ times across the document.
+
+    Tightened from the earlier version: requires 5+ occurrences (not 3) so
+    legit refrains survive. Length range extended to 4-80 chars to catch
+    journal headers like 'Philosophia (2026) 54: - 396'. On by default now
+    that false positives are rare.
     """
     lines = text.split("\n")
     counts: dict[str, int] = {}
     for ln in lines:
         s = ln.strip()
-        if 3 <= len(s) <= 60:
+        if 4 <= len(s) <= 80:
             counts[s] = counts.get(s, 0) + 1
-    frequent = {s for s, n in counts.items() if n >= 3}
+    frequent = {s for s, n in counts.items() if n >= 5}
     if not frequent:
         return text
     return "\n".join(ln for ln in lines if ln.strip() not in frequent)
@@ -147,7 +198,8 @@ def _deduplicate_running_headers(text: str) -> str:
 
 # ---------- Registry ----------
 
-TIER1_RULES: list[CleanupRule] = [
+ALL_RULES: list[CleanupRule] = [
+    # Tier 1 (cosmetic)
     CleanupRule("normalize_unicode", "Normalise unicode",
                 "Convert characters to a canonical form.", _normalize_unicode, True, 1),
     CleanupRule("strip_control_chars", "Strip control characters",
@@ -164,38 +216,140 @@ TIER1_RULES: list[CleanupRule] = [
                 "Reduce 3+ blank lines to 2.", _collapse_blank_lines, True, 1),
     CleanupRule("strip_trailing_ws", "Strip trailing whitespace",
                 "Remove trailing spaces per line.", _strip_trailing_ws, True, 1),
+    CleanupRule("collapse_internal_whitespace", "Collapse internal whitespace",
+                "Replace runs of multiple spaces with a single space.",
+                _collapse_internal_whitespace, True, 1),
+    CleanupRule("strip_urls", "Remove URLs and DOIs",
+                "Strip web addresses and DOI identifiers that would be read character-by-character.",
+                _strip_urls, True, 1),
+    CleanupRule("strip_emails", "Remove email addresses",
+                "Strip email addresses that would be read character-by-character.",
+                _strip_emails, True, 1),
     CleanupRule("remove_page_numbers", "Remove page numbers",
                 "Remove standalone numbers on their own lines.", _remove_page_numbers, True, 1),
-    CleanupRule("expand_abbreviations", "Expand abbreviations",
-                "'e.g.' becomes 'for example', etc.", _expand_abbreviations, True, 1),
-]
-
-TIER2_RULES: list[CleanupRule] = [
+    CleanupRule("expand_abbreviations", "Expand common abbreviations",
+                "'e.g.' \u2192 'for example', 'etc.' \u2192 'et cetera'. "
+                "Academic Latin abbreviations (et al., ibid., op. cit.) are preserved.",
+                _expand_abbreviations, True, 1),
     CleanupRule("strip_footnote_markers", "Strip footnote markers",
-                "Remove bracketed citations and superscripts.", _strip_footnote_markers, True, 2),
+                "Remove bracketed citations and superscript numbers. "
+                "Off by default: can mis-fire on tokens like 'R1049' or 'B12'.",
+                _strip_footnote_markers, False, 1),
+    # Tier 2 (structural)
+    CleanupRule("strip_journal_metadata", "Remove journal metadata",
+                "Strip academic paper submission metadata (Received/Revised/Accepted/Published online). "
+                "Only fires on academic PDFs.",
+                _strip_journal_metadata, True, 2),
     CleanupRule("reflow_paragraphs", "Reflow paragraphs",
                 "Join wrapped lines into single paragraphs. Recommended for PDF and HTML.",
                 _reflow_paragraphs, False, 2),
     CleanupRule("detect_and_mark_chapters", "Detect and mark chapters",
                 "Insert # headers at detected chapter boundaries.",
                 _detect_and_mark_chapters, True, 2),
-    CleanupRule("deduplicate_running_headers", "Remove running headers",
-                "Remove lines that repeat 3+ times across the document. Risky.",
-                _deduplicate_running_headers, False, 2),
+    CleanupRule("deduplicate_running_headers", "Remove repeated short lines",
+                "Remove lines that repeat 5+ times across the document (running headers). "
+                "Turn off for scripts or poetry with intentional refrains.",
+                _deduplicate_running_headers, True, 2),
+    CleanupRule("mark_numbered_sections", "Mark numbered sections",
+                "Prefix academic section headers ('1 Introduction') with '# ' so the pipeline "
+                "detects them as chapter boundaries. Off by default: can false-positive on "
+                "documents that use numbered list items.",
+                _mark_numbered_sections, False, 2),
+]
+
+_RULES_BY_KEY: dict[str, CleanupRule] = {r.key: r for r in ALL_RULES}
+
+
+PHASES: list[tuple[str, list[str]]] = [
+    ("normalise", [
+        "normalize_unicode",
+        "normalize_line_endings",
+        "strip_control_chars",
+        "strip_trailing_ws",
+        "normalize_dashes",
+        "normalize_quotes",
+    ]),
+    ("strip_lines", [
+        "remove_page_numbers",
+        "deduplicate_running_headers",
+        "strip_journal_metadata",
+    ]),
+    ("strip_inline", [
+        "strip_urls",
+        "strip_emails",
+        "strip_footnote_markers",
+    ]),
+    ("reflow", [
+        "fix_hyphenation",
+        "collapse_internal_whitespace",
+        "collapse_blank_lines",
+        "reflow_paragraphs",
+    ]),
+    ("expand", [
+        "expand_abbreviations",
+    ]),
+    ("structure", [
+        "detect_and_mark_chapters",
+        "mark_numbered_sections",
+    ]),
 ]
 
 
+def _validate_phases() -> None:
+    """Assert every rule appears exactly once in PHASES; no unknown keys."""
+    seen: list[str] = []
+    for _phase_name, rule_keys in PHASES:
+        for key in rule_keys:
+            if key in seen:
+                raise RuntimeError(f"Rule '{key}' appears in multiple phases")
+            seen.append(key)
+    all_keys = {r.key for r in ALL_RULES}
+    missing = all_keys - set(seen)
+    extra = set(seen) - all_keys
+    if missing:
+        raise RuntimeError(f"Rules not assigned to any phase: {missing}")
+    if extra:
+        raise RuntimeError(f"Unknown rules listed in PHASES: {extra}")
+
+
+_validate_phases()
+
+
 def all_rules() -> list[CleanupRule]:
-    return TIER1_RULES + TIER2_RULES
+    return list(ALL_RULES)
 
 
 def default_enabled_keys() -> set[str]:
-    return {r.key for r in all_rules() if r.default_on}
+    return {r.key for r in ALL_RULES if r.default_on}
 
 
 def clean(text: str, enabled_keys: set[str]) -> str:
-    """Apply the selected cleanup rules in definition order."""
-    for rule in all_rules():
-        if rule.key in enabled_keys:
-            text = rule.func(text)
+    """Apply the pipeline, running enabled rules in phase order."""
+    for _phase_name, rule_keys in PHASES:
+        for key in rule_keys:
+            if key in enabled_keys:
+                text = _RULES_BY_KEY[key].func(text)
     return text
+
+
+def clean_debug(text: str, enabled_keys: set[str]) -> list[dict]:
+    """Like clean(), but returns a per-rule trace instead of the text.
+
+    Each entry: {phase, rule_key, chars_before, chars_after, delta}.
+    """
+    trace: list[dict] = []
+    for phase_name, rule_keys in PHASES:
+        for key in rule_keys:
+            if key in enabled_keys:
+                rule = _RULES_BY_KEY[key]
+                before = len(text)
+                text = rule.func(text)
+                after = len(text)
+                trace.append({
+                    "phase": phase_name,
+                    "rule_key": key,
+                    "chars_before": before,
+                    "chars_after": after,
+                    "delta": after - before,
+                })
+    return trace

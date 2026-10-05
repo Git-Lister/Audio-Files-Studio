@@ -129,9 +129,6 @@ class IncrementalProcessor:
             except (json.JSONDecodeError, OSError):
                 self._chunk_metadata = []
 
-        # For context buffer
-        self._last_sentence = ""
-
     # ---- Public API ----
     def abort(self):
         self.stop_requested = True
@@ -428,9 +425,6 @@ class IncrementalProcessor:
         max_retries = getattr(self.config, "retries", 3)
         retry_delay = getattr(self.config, "retry_delay", 1.0)
 
-        # Reset context buffer at start of chapter
-        self._last_sentence = ""
-
         for idx, chunk in enumerate(cp.chunks):
             if cp.processed_chunks > idx:
                 continue
@@ -447,20 +441,12 @@ class IncrementalProcessor:
                 self._save_progress()
                 continue
 
-            # ---- Context buffer: prepend last sentence from previous chunk ----
-            context_text = chunk.text
-            if self._last_sentence:
-                # Prepend last sentence with a separator (e.g., newline)
-                context_text = self._last_sentence + "\n\n" + context_text
-
-            # Create a temporary Chunk with context text, but keep original id and metadata
-            context_chunk = Chunk(
-                id=chunk.id,
-                chapter_index=chunk.chapter_index,
-                relative_index=chunk.relative_index,
-                text=context_text,
-                estimated_seconds=chunk.estimated_seconds,
-            )
+            # Context-buffer prepending disabled: XTTS synthesised the prefix
+            # as audio, but the prefix was never trimmed from the output, so
+            # every chunk boundary repeated the previous chunk's last sentence.
+            # Proper context buffering (prepend + trim-from-output) is a
+            # future enhancement. For now, chunks are synthesised in isolation.
+            context_chunk = chunk
 
             for attempt in range(1, max_retries + 1):
                 try:
@@ -473,8 +459,6 @@ class IncrementalProcessor:
                     self._append_chunk_metadata(chunk)
                     self._save_progress()
                     self.logger.debug(f"Chunk {chunk.id} done")
-                    # Update last sentence: extract the last sentence from the *original* chunk text
-                    self._last_sentence = self._extract_last_sentence(chunk.text)
                     break
                 except Exception as e:
                     self.logger.warning(
@@ -502,15 +486,6 @@ class IncrementalProcessor:
             concat_wavs(chunk_wav_files, chapter_wav)
             cp.chapter_audio_created = True
             self.logger.info(f"Chapter {chapter_idx + 1} complete")
-
-    def _extract_last_sentence(self, text: str) -> str:
-        """Extract the last sentence from a piece of text."""
-        import re
-
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        if sentences:
-            return sentences[-1].strip()
-        return ""
 
     def _get_audio_duration(self, audio_path: Path) -> float:
         """Get duration in seconds using ffprobe."""

@@ -188,6 +188,22 @@ class XTTSBackend(TTSBackend):
         # Post-process audio: high-pass filter and normalize
         self._postprocess_audio(out_path)
 
+    def _trim_silence(self, file_path: Path) -> None:
+        """Trim leading and trailing silence from an audio file, in place."""
+        try:
+            tmp = file_path.parent / f"{file_path.stem}_trim.wav"
+            af = ",".join([
+                "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB",
+                "areverse",
+                "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB",
+                "areverse",
+            ])
+            cmd = ["ffmpeg", "-i", str(file_path), "-af", af, str(tmp), "-y"]
+            subprocess.run(cmd, check=True, capture_output=True)
+            tmp.rename(file_path)
+        except Exception as e:
+            logger.warning(f"Silence trim failed for {file_path}: {e}")
+
     def _postprocess_audio(self, file_path: Path) -> None:
         """Apply high-pass filter, optional pitch shift, and normalize peak to -3dB."""
         try:
@@ -247,3 +263,4 @@ class XTTSBackend(TTSBackend):
         logger.debug(f"Synthesising: {text[:60]}...")
         self.tts.tts_to_file(**kwargs)
         logger.debug(f"Saved to {file_path}")
+        self._trim_silence(file_path)
