@@ -76,6 +76,12 @@ def _strip_urls(text: str) -> str:
     text = re.sub(r"\b1\s*0\s*\.\s*\d{4,5}\s*/\s*\S+", "", text)
     # Dangling "doi.org" prefix from a URL whose scheme was removed
     text = re.sub(r"\bdoi\.org\S*", "", text)
+    # Spaced-out domain fragments (e.g. "o i . o r g", "c o m m o n s . o r g")
+    text = re.sub(
+        r"\b(?:[a-zA-Z]\s+){2,}[a-zA-Z]\.[a-zA-Z]{2,}(?:/[^\s]*)?",
+        "",
+        text,
+    )
     return text
 
 
@@ -89,6 +95,8 @@ def _remove_page_numbers(text: str) -> str:
     text = re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)
     # Two short number groups on their own line, e.g. Springer's "1 3"
     text = re.sub(r"^\s*\d{1,2}\s+\d{1,2}\s*$", "", text, flags=re.MULTILINE)
+    # Running header concatenated with page number (e.g. "RESEARCH380")
+    text = re.sub(r"\b[A-Z]{3,}\d{1,4}\b", "", text)
     return text
 
 
@@ -176,6 +184,20 @@ def _mark_numbered_sections(text: str) -> str:
     )
 
 
+def _strip_references_section(text: str) -> str:
+    """Truncate text at a References / Bibliography / Works Cited heading.
+
+    Off by default. When enabled, everything from the heading line to the
+    end of the document is removed. If no such heading is found, text is
+    unchanged.
+    """
+    pattern = r"^\s*#?\s*(?:References|Bibliography|Works\s+Cited|Further\s+Reading)\s*$"
+    match = re.search(pattern, text, flags=re.MULTILINE | re.IGNORECASE)
+    if match is None:
+        return text
+    return text[: match.start()].rstrip()
+
+
 def _deduplicate_running_headers(text: str) -> str:
     """Remove short lines that repeat 5+ times across the document.
 
@@ -243,6 +265,10 @@ ALL_RULES: list[CleanupRule] = [
     CleanupRule("reflow_paragraphs", "Reflow paragraphs",
                 "Join wrapped lines into single paragraphs. Recommended for PDF and HTML.",
                 _reflow_paragraphs, False, 2),
+    CleanupRule("strip_references_section", "Remove References section",
+                "Truncate the document at a References / Bibliography heading. "
+                "Off by default: preserves references for those who want them.",
+                _strip_references_section, False, 2),
     CleanupRule("detect_and_mark_chapters", "Detect and mark chapters",
                 "Insert # headers at detected chapter boundaries.",
                 _detect_and_mark_chapters, True, 2),
@@ -289,6 +315,7 @@ PHASES: list[tuple[str, list[str]]] = [
         "expand_abbreviations",
     ]),
     ("structure", [
+        "strip_references_section",
         "detect_and_mark_chapters",
         "mark_numbered_sections",
     ]),

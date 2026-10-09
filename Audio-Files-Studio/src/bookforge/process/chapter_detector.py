@@ -176,6 +176,12 @@ class ChapterDetector:
         for i, line in enumerate(lines):
             line_stripped = line.strip()
 
+            # Skip the first 20 lines for heuristic detection only.
+            # Author names, affiliations, and abstracts live here in
+            # academic papers and should not be treated as chapter headings.
+            if i < 20:
+                continue
+
             # Skip empty or very long lines
             if not line_stripped or len(line_stripped) > 100:
                 continue

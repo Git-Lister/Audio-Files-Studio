@@ -53,7 +53,7 @@ def view():
                                 except:
                                     pass
                         with ui.row().classes("items-center gap-2 q-mt-sm"):
-                            ui.button("Resume", on_click=lambda p=proj: _resume_project(p)).props(
+                            ui.button("Resume", on_click=lambda p=proj: _on_resume_clicked(p)).props(
                                 "flat color=primary"
                             )
                             ui.button("Delete", on_click=lambda p=proj: _delete_project(p)).props(
@@ -86,10 +86,10 @@ def view():
             return "⏳ In progress"
         return "📄 Prepared"
 
-    def _resume_project(proj: Path):
+    async def _on_resume_clicked(proj: Path):
         callback = state.get_resume_callback()
         if callback:
-            asyncio.create_task(callback(proj.name))
+            await callback(proj.name)
         else:
             safe_notify("Resume not configured.", type="warning")
 

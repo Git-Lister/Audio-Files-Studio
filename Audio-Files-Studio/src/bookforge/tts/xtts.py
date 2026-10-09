@@ -189,7 +189,14 @@ class XTTSBackend(TTSBackend):
         self._postprocess_audio(out_path)
 
     def _trim_silence(self, file_path: Path) -> None:
-        """Trim leading and trailing silence from an audio file, in place."""
+        """Trim leading and trailing silence, then add a fixed pause.
+
+        XTTS pads every synthesis output with silence that is not
+        semantically meaningful (it is an artifact of the model's fixed
+        output buffer). We trim it fully so accumulated padding does not
+        build up across concatenated chunks, then add back a fixed 500ms
+        pause so chunk boundaries do not sound abrupt.
+        """
         try:
             tmp = file_path.parent / f"{file_path.stem}_trim.wav"
             af = ",".join([
@@ -197,6 +204,7 @@ class XTTSBackend(TTSBackend):
                 "areverse",
                 "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB",
                 "areverse",
+                "apad=pad_dur=0.5",
             ])
             cmd = ["ffmpeg", "-i", str(file_path), "-af", af, str(tmp), "-y"]
             subprocess.run(cmd, check=True, capture_output=True)

@@ -47,14 +47,20 @@ def update_notification_panel() -> None:
 def safe_notify(message: str, type: str = "info") -> None:
     """Show a toast and add to persistent panel."""
     add_notification(message, type)
-    if type == "positive":
-        ui.notify(message, type="positive", position="top-right")
-    elif type == "negative":
-        ui.notify(message, type="negative", position="top-right")
-    elif type == "warning":
-        ui.notify(message, type="warning", position="top-right")
-    else:
-        ui.notify(message, type="info", position="top-right")
+    try:
+        if type == "positive":
+            ui.notify(message, type="positive", position="top-right")
+        elif type == "negative":
+            ui.notify(message, type="negative", position="top-right")
+        elif type == "warning":
+            ui.notify(message, type="warning", position="top-right")
+        else:
+            ui.notify(message, type="info", position="top-right")
+    except RuntimeError:
+        # Called from a background task with no UI slot context.
+        # The persistent notification panel entry has already been added;
+        # the transient toast is skipped.
+        pass
 
 
 def init_notification_area() -> None:
