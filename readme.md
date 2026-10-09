@@ -117,7 +117,7 @@ the user chooses it.
 ```bash
 git clone https://github.com/Git-Lister/Audio-Files-Studio.git
 cd Audio-Files-Studio
-docker compose up --build
+ 
 Open your browser at http://localhost:8501.
 
 Requirements:
