@@ -15,7 +15,22 @@ MODEL_REPO = "bartowski/Qwen2.5-3B-Instruct-GGUF"
 MODEL_FILE = "Qwen2.5-3B-Instruct-Q4_K_M.gguf"
 
 # Where the model is cached. In the container, /models is a persistent volume.
-MODEL_CACHE_DIR = Path("/models/llm") if Path("/models").exists() else Path.home() / ".cache" / "bookforge" / "llm"
+def _resolve_cache_dir() -> Path:
+    """Choose the fastest available model storage location.
+
+    Priority:
+      1. /llm-models       — WSL2 native named volume (fast)
+      2. /models/llm       — Windows bind mount fallback (slow)
+      3. ~/.cache/...      — Local dev fallback
+    """
+    if Path("/llm-models").exists():
+        return Path("/llm-models")
+    if Path("/models").exists():
+        return Path("/models/llm")
+    return Path.home() / ".cache" / "bookforge" / "llm"
+
+
+MODEL_CACHE_DIR = _resolve_cache_dir()
 
 
 class LLMEngine:
@@ -53,14 +68,28 @@ class LLMEngine:
             from llama_cpp import Llama
 
             MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Loading LLM: {self._repo_id}/{self._filename}")
-            self._llm = Llama.from_pretrained(
-                repo_id=self._repo_id,
-                filename=self._filename,
-                n_gpu_layers=self._n_gpu_layers,
-                n_ctx=self._n_ctx,
-                verbose=False,
-            )
+            local_path = MODEL_CACHE_DIR / self._filename
+
+            if local_path.exists():
+                logger.info(f"Loading LLM from local file: {local_path}")
+                self._llm = Llama(
+                    model_path=str(local_path),
+                    n_gpu_layers=self._n_gpu_layers,
+                    n_ctx=self._n_ctx,
+                    verbose=False,
+                )
+            else:
+                logger.info(
+                    f"Local model not found at {local_path}; "
+                    f"attempting HuggingFace download: {self._repo_id}/{self._filename}"
+                )
+                self._llm = Llama.from_pretrained(
+                    repo_id=self._repo_id,
+                    filename=self._filename,
+                    n_gpu_layers=self._n_gpu_layers,
+                    n_ctx=self._n_ctx,
+                    verbose=False,
+                )
             logger.info("LLM loaded.")
 
     def generate(

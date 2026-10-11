@@ -112,12 +112,17 @@ the user chooses it.
 
 ## Installation
 
+> **User data location:** Voices, projects, imported books, and temporary
+> files are stored under the project directory (`voice_library.db`,
+> `user_voices/`, `out/`, `books/`, `temp/`). These are excluded from git
+> and are not shared between machines by version control.
+
 ### Option 1: Docker (Recommended)
 
 ```bash
 git clone https://github.com/Git-Lister/Audio-Files-Studio.git
 cd Audio-Files-Studio
- 
+  
 Open your browser at http://localhost:8501.
 
 Requirements:
@@ -162,6 +167,12 @@ Delete — only user-created voices can be deleted.
 Export — saves a .voice.zip and streams it to your browser.
 
 Import — restore a previously exported voice.
+
+> **Sharing voices between machines:** Voices are stored locally and are
+> not synced automatically between machines (the database and audio files
+> are user data). To move a voice between machines, use **Export** on the
+> source and **Import** on the destination. The `.voice.zip` includes the
+> reference audio and the baked preview.
 
 Vocalizer (Creator)
 Quick Start presets — Match Original, Calm Narration, Dramatic Reading.

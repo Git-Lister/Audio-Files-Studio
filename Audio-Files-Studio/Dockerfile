@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     libsndfile1 \
     build-essential \
+    cmake \
     && add-apt-repository ppa:deadsnakes/ppa -y \
     && apt-get update && apt-get install -y \
     python3.11 \
@@ -41,11 +42,27 @@ RUN pip install "transformers==4.42.4"
 # Install Coqui TTS (let pip resolve compatible sub-deps)
 RUN pip install "TTS"
 
-# Install llama-cpp-python with CUDA support.
-# Prefer the cu121 prebuilt wheel; fall back to CPU-only if unavailable.
-RUN pip install llama-cpp-python \
-    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 \
-    || pip install llama-cpp-python
+# Build llama-cpp-python from source with AVX2-only CPU flags.
+# The prebuilt wheels ship AVX512 code that crashes on CPUs lacking it
+# (e.g. Ryzen 3000-series). Explicit flags force a portable binary.
+# llama-cpp-python source build, CPU-only, with AVX2-explicit flags.
+#
+# The prebuilt CUDA wheel from abetlen.github.io crashes with SIGILL on
+# Ryzen 3000-series CPUs (no AVX512). The wheel is compiled with
+# -march=native on the builder's machine, which bakes in AVX512.
+#
+# This build forces the modern ggml flags (GGML_*, not the deprecated LLAMA_*)
+# and disables native CPU detection. CUDA is off to avoid needing the devel
+# base image; a follow-up batch can re-enable CUDA by switching to
+# nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04 if CPU inference proves too slow.
+RUN CMAKE_ARGS="-DGGML_NATIVE=off \
+    -DGGML_AVX=on \
+    -DGGML_AVX2=on \
+    -DGGML_AVX512=off \
+    -DGGML_F16C=on \
+    -DGGML_FMA=on \
+    -DGGML_CUDA=off" \
+    pip install llama-cpp-python --no-binary llama-cpp-python --no-cache-dir
 
 # Verify the stack before copying app code
 RUN python -c "import torch; print(torch.__version__)" && \

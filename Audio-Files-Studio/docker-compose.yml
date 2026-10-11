@@ -7,6 +7,8 @@ services:
     volumes:
       - .:/app
       - C:\bookforge\models:/models
+      - bookforge-llm:/llm-models
+      - bookforge-hf-cache:/root/.cache/huggingface
     environment:
       - COQUI_TTS_AGREED=1
     deploy:
@@ -19,3 +21,7 @@ services:
     stdin_open: true
     tty: true
     command: python src/bookforge/ui/main.py
+
+volumes:
+  bookforge-llm:
+  bookforge-hf-cache:

@@ -421,6 +421,26 @@ class IncrementalProcessor:
                 starting_chunk_id=starting_chunk_id,
             )
 
+        # Pre-flight: if progress says chunks were processed but the WAV
+        # files are missing, reset the chapter's progress counter so we
+        # reprocess from scratch. This handles stale state from prior runs
+        # (e.g. after a container was removed and its layer was discarded,
+        # or after a manual cleanup of the chunks directory).
+        if cp.processed_chunks > 0:
+            missing_chunk_ids: list[int] = []
+            for chunk in cp.chunks[: cp.processed_chunks]:
+                expected = self.project.chunks_dir / f"chunk_{chunk.id:05d}.wav"
+                if not expected.exists():
+                    missing_chunk_ids.append(chunk.id)
+            if missing_chunk_ids:
+                self.logger.warning(
+                    f"Chapter {chapter_idx + 1}: {len(missing_chunk_ids)} chunks "
+                    f"marked processed but WAV files missing. Resetting chapter "
+                    f"progress."
+                )
+                cp.processed_chunks = 0
+                cp.chapter_audio_created = False
+
         chunk_wav_files = []
         max_retries = getattr(self.config, "retries", 3)
         retry_delay = getattr(self.config, "retry_delay", 1.0)
@@ -486,6 +506,27 @@ class IncrementalProcessor:
             concat_wavs(chunk_wav_files, chapter_wav)
             cp.chapter_audio_created = True
             self.logger.info(f"Chapter {chapter_idx + 1} complete")
+        elif not chunk_wav_files and not cp.chapter_audio_created and cp.error_message is None:
+            # No WAV files were produced. Either the chapter text was empty
+            # (no chunks) or the chunk generation failed silently.
+            if not cp.chunks:
+                self.logger.warning(
+                    f"Chapter {chapter_idx + 1} produced no chunks. "
+                    f"Chapter text length: {len(cp.cleaned_text or '')}. "
+                    f"Marking as errored."
+                )
+                cp.error_message = (
+                    f"Chapter {chapter_idx + 1} produced no audio (empty text)"
+                )
+            else:
+                # Chunks exist but no files were produced or found.
+                # This should be caught by the pre-flight check, but log it
+                # in case the pre-flight missed a case.
+                self.logger.warning(
+                    f"Chapter {chapter_idx + 1}: {len(cp.chunks)} chunks "
+                    f"generated but no WAV files present. Chapter will remain "
+                    f"in not-done state."
+                )
 
     def _get_audio_duration(self, audio_path: Path) -> float:
         """Get duration in seconds using ffprobe."""

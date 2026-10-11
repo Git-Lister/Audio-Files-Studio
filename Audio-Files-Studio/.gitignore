@@ -11,6 +11,15 @@ venv/
 htmlcov/
 *.log
 
+# User data — not shared via git
+voice_library.db
+reports.db
+user_voices/
+out/
+temp/
+books/
+voices/
+
 # Audio outputs
 chunks/
 *.wav
@@ -35,5 +44,4 @@ temp/
 # Debug / logs
 debug/
 
-bookforge/.nicegui/storage-general.json
-bookforge/.nicegui/storage-general.json.tmp
+

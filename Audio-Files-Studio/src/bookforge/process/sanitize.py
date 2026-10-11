@@ -18,6 +18,9 @@ def sanitise_for_tts(text: str) -> str:
     # Normalize unicode
     text = unicodedata.normalize("NFKC", text)
 
+    # Remove markdown heading markers (# ## ### etc.)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+
     # Remove zero‑width and control characters
     text = text.replace("\u200b", "")
     text = text.replace("\ufeff", "")

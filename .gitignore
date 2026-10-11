@@ -1,4 +1,23 @@
-
-.nicegui/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# NiceGUI session state
+.nicegui/
+
+# User data — not shared via git
+voice_library.db
+user_voices/
+out/
+temp/
+books/
+voices/

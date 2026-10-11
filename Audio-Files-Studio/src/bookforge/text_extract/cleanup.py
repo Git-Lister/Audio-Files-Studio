@@ -380,3 +380,32 @@ def clean_debug(text: str, enabled_keys: set[str]) -> list[dict]:
                     "delta": after - before,
                 })
     return trace
+
+
+def apply_llm_verdicts(text: str, accepted: dict[int, str]) -> str:
+    """Apply accepted LLM verdicts to the text.
+
+    `accepted` maps line index (0-based) to action ("remove" or "heading").
+    Actions other than these two are ignored — this function only performs
+    the two concrete transformations the UI can offer.
+
+    Line indices refer to the line-numbering the LLM saw when it classified
+    the text (i.e. text.split("\\n") with 0-based indexing).
+    """
+    lines = text.split("\n")
+    result: list[str] = []
+    for i, line in enumerate(lines):
+        action = accepted.get(i)
+        if action == "remove":
+            continue
+        if action == "heading":
+            stripped = line.lstrip()
+            if stripped and not stripped.startswith("#"):
+                # Preserve indentation as best-effort; prepend "# "
+                leading = line[: len(line) - len(stripped)]
+                result.append(f"{leading}# {stripped}")
+            else:
+                result.append(line)
+        else:
+            result.append(line)
+    return "\n".join(result)

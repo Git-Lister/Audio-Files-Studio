@@ -23,6 +23,8 @@ def view(on_dark_toggle=None):
         with ui.row().classes("items-center gap-2 q-mb-md"):
             ui.label("Dark mode").classes("text-caption")
             dark_toggle = ui.switch(value=state.get_dark_mode())
+            with dark_toggle:
+                ui.tooltip("Switch between light and dark themes.")
             dark_toggle.on_value_change(
                 lambda e: on_dark_toggle(e.value) if on_dark_toggle else None
             )
@@ -31,6 +33,8 @@ def view(on_dark_toggle=None):
         with ui.row().classes("items-center gap-2 q-mb-md"):
             ui.label("Expert mode (show advanced controls)").classes("text-caption")
             expert_toggle = ui.switch(value=state.get_expert_mode())
+            with expert_toggle:
+                ui.tooltip("Show advanced controls across the application. Recommended for experienced users.")
             expert_toggle.on_value_change(lambda e: state.set_expert_mode(e.value))
 
         ui.separator()
@@ -83,6 +87,8 @@ def view(on_dark_toggle=None):
                 options=["xtts", "piper"],
                 value=state.get_state("default_backend", "xtts"),
             ).classes("w-48")
+            with backend_select:
+                ui.tooltip("XTTS offers high-quality voice cloning and uses the GPU. Piper is faster and runs on CPU but produces more robotic output.")
             backend_select.on_value_change(lambda e: state.set_state("default_backend", e.value))
 
         asyncio.create_task(refresh_preset_list())

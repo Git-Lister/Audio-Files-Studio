@@ -22,26 +22,36 @@ def add_notification(message: str, type: str = "info") -> None:
     _notifications.append({"message": message, "type": type, "timestamp": time.time()})
     if len(_notifications) > 20:
         _notifications.pop(0)
-    update_notification_panel()
+    try:
+        update_notification_panel()
+    except RuntimeError:
+        # Panel unreachable; the notification is still recorded in
+        # _notifications for when a healthy panel appears.
+        pass
 
 
 def update_notification_panel() -> None:
     """Refresh the persistent notification panel."""
+    global _notification_panel
     if _notification_panel is None:
         return
-    _notification_panel.clear()
-    with _notification_panel:
-        ui.label("📢 Notifications").classes("text-subtitle1")
-        for notif in _notifications[-5:]:  # Show last 5
-            color = {
-                "positive": "text-positive",
-                "negative": "text-negative",
-                "warning": "text-warning",
-                "info": "text-primary",
-            }.get(notif["type"], "text-grey")
-            ui.label(f"[{notif['type'].upper()}] {notif['message']}").classes(
-                f"text-caption {color}"
-            )
+    try:
+        _notification_panel.clear()
+        with _notification_panel:
+            ui.label("📢 Notifications").classes("text-subtitle1")
+            for n in _notifications[-5:]:  # Show last 5
+                color = {
+                    "positive": "text-positive",
+                    "negative": "text-negative",
+                    "warning": "text-warning",
+                    "info": "text-primary",
+                }.get(n["type"], "text-grey")
+                ui.label(f"[{n['type'].upper()}] {n['message']}").classes(
+                    f"text-caption {color}"
+                )
+    except RuntimeError:
+        # Panel belongs to a deleted client; drop the stale reference.
+        _notification_panel = None
 
 
 def safe_notify(message: str, type: str = "info") -> None:

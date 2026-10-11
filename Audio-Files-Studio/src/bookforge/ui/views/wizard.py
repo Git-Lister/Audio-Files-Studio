@@ -142,7 +142,8 @@ class WizardState:
                 options=book_options,
                 value=initial_book_value,
             ).classes("w-full")
-            ui.tooltip("Select a .txt file from the books folder")
+            ui.tooltip("Files in books/ are ready to use. To import a PDF, DOCX, "
+                       "EPUB, or HTML file, use the Import & Prepare section in the sidebar.")
 
             preview_area = ui.column().classes("q-mt-md")
 
@@ -255,6 +256,11 @@ class WizardState:
                         value=self.selected_voice_id or "",
                         on_change=self.on_voice_selected,
                     ).classes("w-full")
+                    with self.voice_dropdown:
+                        ui.tooltip("Choose a voice you've saved in the Voice Box. "
+                                   "Its reference audio and parameters will be used "
+                                   "for this project. Or select 'Custom upload below' "
+                                   "to provide a fresh reference WAV.")
 
                     # --- Reference status label (seeded from state) ---
                     if self.selected_voice_id:
@@ -440,22 +446,29 @@ class WizardState:
             self.temp_slider = ui.slider(
                 min=0.1, max=1.0, step=0.01, value=default_temp
             ).classes("w-full")
+            with self.temp_slider:
+                ui.tooltip("Low = calm, steady reading. High = dramatic, varied. "
+                           "For a faithful match to the original sample, keep this low.")
             ui.label().bind_text_from(
-                self.temp_slider, "value", backward=lambda v: f"Temperature: {v:.2f}"
+                self.temp_slider, "value", backward=lambda v: f"Expressiveness (temp): {v:.2f}"
             )
 
             self.length_slider = ui.slider(
                 min=0.5, max=2.0, step=0.05, value=default_length
             ).classes("w-full")
+            with self.length_slider:
+                ui.tooltip("Affects phrasing length. Lower = drawn-out phrases; higher = tighter, faster phrasing.")
             ui.label().bind_text_from(
-                self.length_slider, "value", backward=lambda v: f"Length Penalty: {v:.2f}"
+                self.length_slider, "value", backward=lambda v: f"Speed (len pen): {v:.2f}"
             )
 
             self.repeat_slider = ui.slider(
                 min=1.0, max=10.0, step=0.5, value=default_repeat
             ).classes("w-full")
+            with self.repeat_slider:
+                ui.tooltip("Higher = stronger suppression of repeated words. Lower = more natural-sounding but with a risk of stutters.")
             ui.label().bind_text_from(
-                self.repeat_slider, "value", backward=lambda v: f"Repetition Penalty: {v:.1f}"
+                self.repeat_slider, "value", backward=lambda v: f"Stability (rep pen): {v:.1f}"
             )
 
             self.normalize_check = ui.checkbox("Normalize final book", value=False)
