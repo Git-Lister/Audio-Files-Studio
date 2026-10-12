@@ -19,6 +19,7 @@ out/
 temp/
 books/
 voices/
+audio_edits/
 
 # Audio outputs
 chunks/

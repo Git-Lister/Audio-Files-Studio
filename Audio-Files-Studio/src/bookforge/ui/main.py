@@ -18,6 +18,7 @@ from bookforge.ui.components import (
     update_progress_from_processor,
 )
 from bookforge.ui.views import (
+    audio_studio,
     home,
     import_prepare,
     pipeline,
@@ -30,6 +31,9 @@ from bookforge.ui.views import (
 
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
+
+# Serve temp/studio directory for audio files
+app.add_static_files("/temp", Path("temp"))
 
 @ui.page("/")
 async def main_page():
@@ -130,6 +134,11 @@ async def main_page():
                 on_click=lambda: navigate("import_prepare"),
             ).props("flat align=left")
             ui.button(
+                "Audio Studio",
+                icon="graphic_eq",
+                on_click=lambda: navigate("audio_studio"),
+            ).props("flat align=left")
+            ui.button(
                 "Voice Box (Gallery)", icon="library_books", on_click=lambda: navigate("voice_box")
             ).props("flat align=left")
 
@@ -178,6 +187,8 @@ async def main_page():
                 projects.view()
             elif view_name == "import_prepare":
                 import_prepare.view()
+            elif view_name == "audio_studio":
+                audio_studio.view()
             elif view_name == "voice_box":
                 voice_box.view(switch_to_vocalizer_callback=lambda: navigate("vocalizer"))
             elif view_name == "vocalizer":
