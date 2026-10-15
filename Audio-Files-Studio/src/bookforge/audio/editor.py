@@ -12,15 +12,26 @@ TEMP_STUDIO_DIR = Path("temp/studio")
 SESSIONS_DIR = TEMP_STUDIO_DIR / "sessions"
 
 
-def new_working_copy(source: Path) -> Path:
-    """Copy source to a fresh working file under temp/studio/.
+def new_session_dir() -> Path:
+    """Create and return a fresh session directory under temp/studio/sessions/."""
+    import uuid as _uuid
+    session_id = _uuid.uuid4().hex[:12]
+    session_dir = TEMP_STUDIO_DIR / "sessions" / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    return session_dir.resolve()
+
+
+def new_working_copy(source: Path, session_dir: Path | None = None) -> Path:
+    """Copy source to a fresh working file under temp/studio/sessions/<session_id>/.
 
     Returns the working file path. Downmixes to a consistent format:
     44.1kHz stereo, 16-bit PCM WAV. This standardises the working format
     for all subsequent operations.
     """
-    TEMP_STUDIO_DIR.mkdir(parents=True, exist_ok=True)
-    working = TEMP_STUDIO_DIR / f"working_{uuid.uuid4().hex}.wav"
+    if session_dir is None:
+        session_dir = new_session_dir()
+    
+    working_path = session_dir / "working.wav"
 
     subprocess.run(
         [
@@ -34,12 +45,26 @@ def new_working_copy(source: Path) -> Path:
             "2",
             "-c:a",
             "pcm_s16le",
-            str(working),
+            str(working_path),
         ],
         check=True,
         capture_output=True,
     )
-    return working
+    
+    # --- Diagnostic: verify creation and list the directory ---
+    print(f"[AudioStudio.editor] new_working_copy returning: {working_path}")
+    print(f"[AudioStudio.editor]   exists: {working_path.exists()}")
+    print(f"[AudioStudio.editor]   absolute: {working_path.resolve()}")
+    print(f"[AudioStudio.editor]   cwd: {Path.cwd()}")
+    try:
+        files = sorted(TEMP_STUDIO_DIR.glob("*"))
+        print(f"[AudioStudio.editor]   temp/studio contents ({len(files)} files):")
+        for f in files:
+            print(f"[AudioStudio.editor]     {f.name} ({f.stat().st_size} bytes)")
+    except Exception as e:
+        print(f"[AudioStudio.editor]   could not list temp/studio: {e}")
+    
+    return working_path.resolve()
 
 
 def _ensure_session_dir() -> Path:
@@ -51,15 +76,30 @@ def _ensure_session_dir() -> Path:
 
 
 def snapshot(working: Path, session_dir: Path) -> Path:
-    """Copy the working file into session_dir as a numbered snapshot.
+    """Copy the working file into session_dir/snapshots/ as a numbered snapshot.
 
-    Returns the snapshot path.
+    COPY (not move) so the working file remains in place for the operation
+    that will follow. Returns the absolute path of the snapshot file.
     """
-    existing = sorted(session_dir.glob("snap_*.wav"))
+    import shutil as _shutil
+
+    snapshots_dir = session_dir / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Next sequential number
+    existing = sorted(snapshots_dir.glob("snap_*.wav"))
     next_num = len(existing) + 1
-    snap_path = session_dir / f"snap_{next_num:04d}.wav"
-    working.replace(snap_path)  # Move current working to snapshot
-    return snap_path
+    snapshot_path = snapshots_dir / f"snap_{next_num:04d}.wav"
+
+    print(f"[AudioStudio.editor] snapshot: copying {working} -> {snapshot_path}")
+    print(f"[AudioStudio.editor]   source exists: {working.exists()}")
+
+    _shutil.copy(working, snapshot_path)
+
+    print(f"[AudioStudio.editor]   snapshot exists after copy: {snapshot_path.exists()}")
+    print(f"[AudioStudio.editor]   source still exists: {working.exists()}")
+
+    return snapshot_path.resolve()
 
 
 def _run_ffmpeg(cmd: list[str]) -> None:
@@ -70,121 +110,128 @@ def _run_ffmpeg(cmd: list[str]) -> None:
 def trim(working: Path, start: float, end: float) -> None:
     """Trim working in place to [start, end] seconds.
 
-    Non-destructive on failure: writes to a temp file first, then renames
-    over the original.
+    Uses input seeking (`-ss` before `-i`) and an explicit duration
+    (`-t`) so the interpretation is unambiguous across ffmpeg versions.
+    Writes to a temp file first, then renames over the original.
     """
-    if start >= end:
-        raise ValueError("start must be less than end")
+    print(f"[AudioStudio.editor] trim called: working={working}")
+    print(f"[AudioStudio.editor]   exists: {working.exists()}")
+    print(f"[AudioStudio.editor]   absolute: {working.resolve()}")
+    print(f"[AudioStudio.editor]   cwd: {Path.cwd()}")
+    try:
+        files = sorted(Path("temp/studio").glob("*"))
+        print(f"[AudioStudio.editor]   temp/studio contents ({len(files)} files):")
+        for f in files:
+            print(f"[AudioStudio.editor]     {f.name} ({f.stat().st_size} bytes)")
+    except Exception as e:
+        print(f"[AudioStudio.editor]   could not list temp/studio: {e}")
+    
+    if end <= start:
+        raise ValueError(f"Invalid trim range: start={start}, end={end}")
+    if not working.exists():
+        raise FileNotFoundError(f"Working file not found: {working}")
 
-    temp_out = working.with_suffix(".trim.wav")
-    _run_ffmpeg(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(working),
-            "-ss",
-            str(start),
-            "-to",
-            str(end),
-            "-c:a",
-            "pcm_s16le",
-            "-ar",
-            "44100",
-            "-ac",
-            "2",
-            str(temp_out),
-        ]
-    )
-    temp_out.replace(working)
+    duration = end - start
+    tmp = working.parent / f"{working.stem}.trim.wav"
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss", f"{start:.6f}",
+        "-i", str(working),
+        "-t", f"{duration:.6f}",
+        "-c:a", "pcm_s16le",
+        "-ar", "44100",
+        "-ac", "2",
+        str(tmp),
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode(errors="ignore") if e.stderr else "(no stderr)"
+        raise RuntimeError(
+            f"ffmpeg trim failed (exit {e.returncode}): {stderr[-500:]}"
+        ) from e
+    except FileNotFoundError as e:
+        raise RuntimeError(f"ffmpeg not found: {e}") from e
+
+    tmp.rename(working)
 
 
 def delete_range(working: Path, start: float, end: float) -> None:
     """Delete the [start, end] region and concatenate what remains.
 
-    If deletion leaves nothing, raise ValueError.
-    Uses concat_wavs from the existing audio.concatenate module.
+    Extracts the before and after portions, then concatenates them.
+    If either portion is empty, only the other is retained.
     """
-    if start >= end:
-        raise ValueError("start must be less than end")
-
-    # Get duration first
-    duration_cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(working),
-    ]
-    result = subprocess.run(duration_cmd, capture_output=True, text=True, check=True)
-    duration = float(result.stdout.strip())
-
-    if start < 0 or end > duration:
-        raise ValueError(f"Range [{start}, {end}] exceeds duration {duration}")
-
-    part_before = working.with_suffix(".before.wav")
-    part_after = working.with_suffix(".after.wav")
-
+    print(f"[AudioStudio.editor] delete_range called: working={working}")
+    print(f"[AudioStudio.editor]   exists: {working.exists()}")
+    print(f"[AudioStudio.editor]   absolute: {working.resolve()}")
+    print(f"[AudioStudio.editor]   cwd: {Path.cwd()}")
     try:
-        has_before = False
-        has_after = False
+        files = sorted(Path("temp/studio").glob("*"))
+        print(f"[AudioStudio.editor]   temp/studio contents ({len(files)} files):")
+        for f in files:
+            print(f"[AudioStudio.editor]     {f.name} ({f.stat().st_size} bytes)")
+    except Exception as e:
+        print(f"[AudioStudio.editor]   could not list temp/studio: {e}")
+    
+    if end <= start:
+        raise ValueError(f"Invalid delete range: start={start}, end={end}")
+    if not working.exists():
+        raise FileNotFoundError(f"Working file not found: {working}")
 
-        if start > 0:
-            _run_ffmpeg(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(working),
-                    "-to",
-                    str(start),
-                    "-c:a",
-                    "pcm_s16le",
-                    "-ar",
-                    "44100",
-                    "-ac",
-                    "2",
-                    str(part_before),
-                ]
-            )
-            has_before = True
+    parent = working.parent
+    before = parent / f"{working.stem}.before.wav"
+    after = parent / f"{working.stem}.after.wav"
 
-        if end < duration:
-            _run_ffmpeg(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(working),
-                    "-ss",
-                    str(end),
-                    "-c:a",
-                    "pcm_s16le",
-                    "-ar",
-                    "44100",
-                    "-ac",
-                    "2",
-                    str(part_after),
-                ]
-            )
-            has_after = True
+    # Extract before
+    if start > 0:
+        cmd_before = [
+            "ffmpeg", "-y",
+            "-i", str(working),
+            "-t", f"{start:.6f}",
+            "-c:a", "pcm_s16le", "-ar", "44100", "-ac", "2",
+            str(before),
+        ]
+        try:
+            subprocess.run(cmd_before, check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode(errors="ignore") if e.stderr else "(no stderr)"
+            raise RuntimeError(
+                f"ffmpeg extract-before failed (exit {e.returncode}): {stderr[-500:]}"
+            ) from e
 
-        if has_before and has_after:
-            concat_wavs([part_before, part_after], working)
-        elif has_before:
-            part_before.replace(working)
-        elif has_after:
-            part_after.replace(working)
-        else:
-            raise ValueError("Deletion would leave empty audio")
+    # Extract after
+    cmd_after = [
+        "ffmpeg", "-y",
+        "-ss", f"{end:.6f}",
+        "-i", str(working),
+        "-c:a", "pcm_s16le", "-ar", "44100", "-ac", "2",
+        str(after),
+    ]
+    try:
+        subprocess.run(cmd_after, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode(errors="ignore") if e.stderr else "(no stderr)"
+        raise RuntimeError(
+            f"ffmpeg extract-after failed (exit {e.returncode}): {stderr[-500:]}"
+        ) from e
 
-    finally:
-        for p in (part_before, part_after):
-            if p.exists():
-                p.unlink()
+    # If we had both parts, concatenate them. Otherwise, use whichever exists.
+    if before.exists() and after.exists():
+        concat_wavs([before, after], working)
+        before.unlink(missing_ok=True)
+        after.unlink(missing_ok=True)
+    elif after.exists():
+        after.replace(working)
+    elif before.exists():
+        before.replace(working)
+    else:
+        # Nothing to keep -- delete_range removed the whole file
+        working.unlink(missing_ok=True)
+        raise RuntimeError("Delete range removed the entire file")
 
 
 def split_at(working: Path, position: float, output_dir: Path) -> tuple[Path, Path]:

@@ -51,6 +51,7 @@ class WizardState:
 
         # Confirm
         self.project_name_input: ui.input | None = None
+        self.create_btn: ui.button | None = None
 
         # Container
         self.step_container: ui.column | None = None
@@ -491,7 +492,9 @@ class WizardState:
 
             self.project_name_input = ui.input(
                 label="Project name",
-                value="my-audiobook",
+                value="",
+                placeholder="e.g. my-first-book",
+                on_change=lambda e: self._update_create_button_state(),
             ).classes("w-full")
             ui.tooltip("This will be the folder name under out/")
 
@@ -528,7 +531,11 @@ class WizardState:
 
             with ui.row().classes("q-mt-md"):
                 ui.button("Back", on_click=lambda: self.go_to_step(3)).props("flat")
-                ui.button("Create Project", on_click=self.create_project).props("color=primary")
+                self.create_btn = ui.button(
+                    "Create Project", on_click=self.create_project
+                ).props("color=primary")
+                self.create_btn.disable()
+                self._update_create_button_state()
 
     # ---- Create Project ----
     async def create_project(self):
@@ -571,6 +578,41 @@ class WizardState:
 
         sanitised = sanitise_filename(name)
         output_dir = Path("out") / sanitised
+        if output_dir.exists():
+            # Offer a numbered alternative
+            counter = 1
+            while True:
+                alt = Path("out") / f"{sanitised}_{counter}"
+                if not alt.exists():
+                    break
+                counter += 1
+
+            with ui.dialog() as dialog, ui.card().classes("max-w-md"):
+                ui.label("Project name already exists").classes("text-h6")
+                ui.label(
+                    f"A project called '{sanitised}' already exists in out/. "
+                    f"Choose a different name or use the suggested alternative."
+                ).classes("text-caption")
+                ui.label(f"Suggested: {alt.name}").classes("text-caption text-grey")
+
+                def use_alt() -> None:
+                    dialog.close()
+                    self.project_name_input.value = alt.name
+                    asyncio.create_task(self.create_project())
+
+                def cancel() -> None:
+                    dialog.close()
+                    # Re-enable the button
+                    try:
+                        self.create_btn.enable()
+                    except RuntimeError:
+                        pass
+
+                with ui.row().classes("justify-end w-full q-mt-md gap-2"):
+                    ui.button("Cancel", on_click=cancel).props("flat")
+                    ui.button("Use alternative", on_click=use_alt).props("color=primary")
+            dialog.open()
+            return
 
         xtts_kwargs = {}
         if self.backend == "xtts":
@@ -642,6 +684,21 @@ class WizardState:
 
             state.set_current_view("pipeline")
             state.set_pipeline_step("prepare")
+
+    def _update_create_button_state(self) -> None:
+        if self.create_btn is None or self.project_name_input is None:
+            return
+        name = (self.project_name_input.value or "").strip()
+        if name:
+            try:
+                self.create_btn.enable()
+            except RuntimeError:
+                pass
+        else:
+            try:
+                self.create_btn.disable()
+            except RuntimeError:
+                pass
 
 
 def view(on_switch_to_pipeline=None):

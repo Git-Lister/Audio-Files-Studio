@@ -29,6 +29,35 @@ Output: a JSON object with one key, "line_decisions", an array. Each element has
 Return only the JSON object, no other text."""
 
 
+def build_system_prompt(user_instructions: str | None = None) -> str:
+    """Compose the system prompt from the base rules plus optional user
+    instructions.
+
+    User instructions are appended as a clearly-delimited section. They
+    refine the base rules but do not replace them. If the user says
+    something that contradicts a base rule (e.g. "keep running headers"),
+    the model may still follow the base rule; we do not attempt to
+    enforce precedence here.
+    """
+    base = EXECUTOR_SYSTEM_PROMPT
+    if not user_instructions or not user_instructions.strip():
+        return base
+
+    cleaned = user_instructions.strip()
+    # Cap instructions at a reasonable length. Longer instructions dilute
+    # the base prompt and rarely help.
+    if len(cleaned) > 2000:
+        cleaned = cleaned[:2000] + " [...]"
+
+    return (
+        base
+        + "\n\nADDITIONAL USER INSTRUCTIONS:\n"
+        + "The user of this tool has provided the following guidance for "
+        + "this specific document. Apply it in addition to the rules above.\n\n"
+        + cleaned
+    )
+
+
 def build_executor_user_prompt(numbered_lines: str) -> str:
     return (
         "Classify each line of the following document. The lines are "

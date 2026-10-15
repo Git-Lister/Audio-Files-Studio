@@ -42,7 +42,35 @@ class PipelineState:
         self.next_btn: ui.button | None = None
         self.all_btn: ui.button | None = None
 
+        # Track which chapter expansions are open to preserve them across rebuilds
+        self.expanded_chapters: set[int] = set()
+        self._last_chapter_signature: tuple = ()
+
+        # Track processing state locally to control button visibility without flicker
+        self.is_processing: bool = False
+
         self.build_ui()
+
+    def _set_processing(self, value: bool) -> None:
+        """Update the processing state and refresh dependent buttons."""
+        self.is_processing = value
+
+        for btn in (self.graceful_stop_btn, self.abort_btn):
+            if btn is not None:
+                try:
+                    btn.visible = value
+                except RuntimeError:
+                    pass
+
+        for btn in (self.next_btn, self.all_btn):
+            if btn is not None:
+                try:
+                    if value:
+                        btn.disable()
+                    else:
+                        btn.enable()
+                except RuntimeError:
+                    pass
 
     def build_ui(self):
         self.container.clear()
@@ -188,20 +216,33 @@ class PipelineState:
                 self.abort_btn = ui.button(
                     "Abort", icon="stop", color="negative", on_click=self.abort_now
                 )
-                self.graceful_stop_btn.visible = pd.get("active", False)
-                self.abort_btn.visible = pd.get("active", False)
+                self.graceful_stop_btn.visible = self.is_processing
+                self.abort_btn.visible = self.is_processing
+                if self.is_processing:
+                    self.next_btn.disable()
+                    self.all_btn.disable()
 
             ui.timer(1.0, self.refresh_synthesize_ui)
 
     def rebuild_chapter_list(self):
         if self.chapter_list is None:
             return
-        self.chapter_list.clear()
         proc = get_processor()
         if proc is None:
             return
         statuses = proc.chapter_statuses
+
+        # Signature captures state that affects rendering
+        signature = tuple(
+            (s["index"], s["processed"], s["chunks_done"], s["chunks_total"], bool(s["error"]))
+            for s in statuses
+        )
+        if signature == self._last_chapter_signature:
+            return
+        self._last_chapter_signature = signature
+
         chunks_metadata = proc._chunk_metadata if hasattr(proc, "_chunk_metadata") else []
+        self.chapter_list.clear()
         with self.chapter_list:
             for status in statuses:
                 with ui.card().classes("w-full q-mb-sm"):
@@ -224,12 +265,22 @@ class PipelineState:
                         c for c in chunks_metadata if c.get("chapter_index") == chapter_idx - 1
                     ]
                     if chapter_chunks:
-                        with ui.expansion(f"{len(chapter_chunks)} chunks", icon="list"):
+                        is_expanded = chapter_idx in self.expanded_chapters
+                        expansion = ui.expansion(
+                            f"{len(chapter_chunks)} chunks",
+                            icon="list",
+                            value=is_expanded,
+                        )
+                        with expansion:
                             for chunk in chapter_chunks:
-                                with ui.row().classes("items-center gap-2"):
+                                with ui.row().classes("items-center gap-2 w-full"):
                                     ui.label(f"Chunk {chunk['id']}").classes("text-caption")
+                                    duration = chunk.get("actual_duration", 0.0)
+                                    if duration:
+                                        ui.label(f"{duration:.1f}s").classes(
+                                            "text-caption text-grey"
+                                        )
                                     ui.space()
-                                    # FIXED: removed size="sm" and used .props('size=sm')
                                     ui.button(
                                         "Re‑synth",
                                         icon="refresh",
@@ -237,6 +288,14 @@ class PipelineState:
                                             cid
                                         ),
                                     ).props("flat color=secondary size=sm")
+
+                        def on_expand_change(e, idx=chapter_idx):
+                            if e.value:
+                                self.expanded_chapters.add(idx)
+                            else:
+                                self.expanded_chapters.discard(idx)
+
+                        expansion.on_value_change(on_expand_change)
 
     async def refresh_synthesize_ui(self):
         pd = get_progress_dict()
@@ -246,14 +305,6 @@ class PipelineState:
             self.overall_progress.set_value(pd["overall_progress"])
         if self.chapter_progress is not None:
             self.chapter_progress.set_value(pd["chapter_progress"])
-        if self.graceful_stop_btn is not None:
-            self.graceful_stop_btn.visible = pd.get("active", False)
-        if self.abort_btn is not None:
-            self.abort_btn.visible = pd.get("active", False)
-        if self.next_btn is not None:
-            self.next_btn.disable() if pd.get("active") else self.next_btn.enable()
-        if self.all_btn is not None:
-            self.all_btn.disable() if pd.get("active") else self.all_btn.enable()
         self.rebuild_chapter_list()
 
     async def process_one(self):
@@ -275,7 +326,8 @@ class PipelineState:
         if proc is None or proc.book_text is None:
             safe_notify("No prepared book.", type="negative")
             return
-        set_progress_dict({"active": True})
+        set_progress_dict({"active": True})  # keep for backwards compat
+        self._set_processing(True)
         try:
             while True:
                 try:
@@ -294,6 +346,7 @@ class PipelineState:
         except Exception as e:
             safe_notify(f"Error: {e}", type="negative")
         finally:
+            self._set_processing(False)
             set_progress_dict({"active": False})
 
     def graceful_stop(self):

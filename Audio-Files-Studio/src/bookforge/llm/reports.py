@@ -24,7 +24,7 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create the runs table if it doesn't exist."""
+    """Create the runs table if it doesn't exist, and apply migrations."""
     conn = _get_conn()
     c = conn.cursor()
     c.execute("""
@@ -42,6 +42,12 @@ def init_db() -> None:
             status TEXT DEFAULT 'proposed'
         )
     """)
+
+    # Idempotent migration: add user_instructions column if missing.
+    cols = {row[1] for row in c.execute("PRAGMA table_info(llm_runs)")}
+    if "user_instructions" not in cols:
+        c.execute("ALTER TABLE llm_runs ADD COLUMN user_instructions TEXT")
+
     c.execute("CREATE INDEX IF NOT EXISTS idx_runs_created ON llm_runs(created_at)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_runs_hash ON llm_runs(input_hash)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON llm_runs(status)")
@@ -62,6 +68,7 @@ def save_run(
     model_name: str = "",
     source_name: str | None = None,
     elapsed_seconds: float | None = None,
+    user_instructions: str | None = None,
 ) -> int:
     """Record a new run. Returns the row id."""
     conn = _get_conn()
@@ -70,8 +77,8 @@ def save_run(
         """
         INSERT INTO llm_runs (
             source_name, input_hash, input_chars, model_name,
-            verdicts_json, elapsed_seconds, status
-        ) VALUES (?, ?, ?, ?, ?, ?, 'proposed')
+            verdicts_json, elapsed_seconds, user_instructions, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'proposed')
         """,
         (
             source_name,
@@ -80,6 +87,7 @@ def save_run(
             model_name,
             json.dumps(verdicts),
             elapsed_seconds,
+            user_instructions,
         ),
     )
     run_id = c.lastrowid

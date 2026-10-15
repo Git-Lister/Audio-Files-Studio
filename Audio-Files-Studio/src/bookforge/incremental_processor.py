@@ -122,7 +122,27 @@ class IncrementalProcessor:
         self.chunks_index_file = output_dir / "chunks_index.json"
 
         self._chunk_metadata: list[dict] = []
-        if self.chunks_index_file.exists():
+
+        # Only trust chunks_index.json if there is also a progress file,
+        # meaning this is a genuine resume. Otherwise, archive it: the
+        # stale index belongs to a prior run that was either finished or
+        # abandoned, and appending to it would corrupt this run's counts.
+        is_resume = self.progress_file.exists()
+
+        if self.chunks_index_file.exists() and not is_resume:
+            import time as _time
+            archive = self.chunks_index_file.parent / f"{self.chunks_index_file.stem}.{int(_time.time())}.bak"
+            try:
+                self.chunks_index_file.rename(archive)
+                self.logger.info(
+                    f"Archived stale chunk index to {archive.name}"
+                )
+            except OSError as e:
+                self.logger.warning(
+                    f"Could not archive stale chunk index: {e}"
+                )
+
+        if self.chunks_index_file.exists() and is_resume:
             try:
                 with self.chunks_index_file.open("r") as f:
                     self._chunk_metadata = json.load(f)
@@ -275,6 +295,9 @@ class IncrementalProcessor:
                 "version": "1.2.0",
                 "processing_completed": datetime.now(timezone.utc).isoformat(),
                 "backend_params": self.backend_params,
+                # New: preserve voice reference for later lookup
+                "speaker_wav": str(self.speaker_wav) if self.speaker_wav else None,
+                "voice_model": str(self.voice_model) if self.voice_model else None,
             }
         )
         if self.progress_file.exists():

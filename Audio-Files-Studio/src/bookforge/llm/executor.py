@@ -6,7 +6,7 @@ import json
 import logging
 
 from .engine import LLMEngine, get_engine
-from .prompts import EXECUTOR_SYSTEM_PROMPT, build_executor_user_prompt
+from .prompts import build_executor_user_prompt, build_system_prompt
 from .schemas import ExecutorResult, LineDecision
 
 logger = logging.getLogger("bookforge.llm.executor")
@@ -21,7 +21,11 @@ class Executor:
         self._engine = engine or get_engine()
         self._batch_size = batch_size
 
-    def classify_lines(self, text: str) -> ExecutorResult:
+    def classify_lines(
+        self,
+        text: str,
+        user_instructions: str | None = None,
+    ) -> ExecutorResult:
         """Ask the model to classify each line of text, in batches.
 
         Long documents are split into batches of `batch_size` lines.
@@ -45,6 +49,9 @@ class Executor:
         batches_attempted = 0
         batches_succeeded = 0
 
+        # Compose the system prompt once, outside the batch loop.
+        system_prompt = build_system_prompt(user_instructions)
+
         for start in range(0, total_lines, self._batch_size):
             end = min(start + self._batch_size, total_lines)
             batch_lines = lines[start:end]
@@ -57,7 +64,7 @@ class Executor:
 
             try:
                 raw = self._engine.generate(
-                    system_prompt=EXECUTOR_SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     max_tokens=2048,
                     temperature=0.0,

@@ -14,7 +14,7 @@ from pathlib import Path
 from nicegui import ui
 
 from bookforge.audio.editor import delete_range, new_working_copy, snapshot, trim
-from bookforge.audio.peaks import TEMP_STUDIO_DIR, extract_peaks, get_metadata
+from bookforge.audio.peaks import TEMP_STUDIO_DIR, extract_peaks, get_metadata, get_duration
 from bookforge.ui.components import safe_notify
 
 AUDIO_EDITS_DIR = Path("audio_edits")
@@ -40,6 +40,20 @@ ui.add_body_html("""
         studioSelectionEnd = 0;
         window.drawStudioWaveform();
     };
+
+    // Emit event to Python via NiceGUI
+    function emitEvent(eventName, payload) {
+        if (typeof window.emitEvent === 'function') {
+            window.emitEvent(eventName, payload);
+        } else {
+            console.warn('Audio Studio: emitEvent not available, falling back to hidden input');
+            const input = document.getElementById('studio_selection');
+            if (input) {
+                input.value = JSON.stringify(payload);
+                input.dispatchEvent(new Event('change'));
+            }
+        }
+    }
 
     window.drawStudioWaveform = function() {
         const canvas = document.getElementById('studioWaveform');
@@ -134,10 +148,16 @@ ui.add_body_html("""
     }
 
     function sendSelection(startSec, endSec) {
-        const input = document.getElementById('studio_selection');
-        if (!input) return;
-        input.value = JSON.stringify({start: startSec, end: endSec});
-        input.dispatchEvent(new Event('change'));
+        if (typeof emitEvent === 'function') {
+            emitEvent('studio_selection', {start: startSec, end: endSec});
+        } else {
+            console.warn('Audio Studio: emitEvent not available, falling back to hidden input');
+            const input = document.getElementById('studio_selection');
+            if (input) {
+                input.value = JSON.stringify({start: startSec, end: endSec});
+                input.dispatchEvent(new Event('change'));
+            }
+        }
     }
 
     function attachStudioListeners() {
@@ -238,7 +258,6 @@ def view():
     export_filename: ui.input | None = None
     export_btn: ui.button | None = None
     clear_btn: ui.button | None = None
-    selection_input: ui.input | None = None
 
     # ---- Helpers ----
     def update_ui_state():
@@ -291,18 +310,43 @@ def view():
             except RuntimeError:
                 pass
 
-    def on_selection_change(e):
-        """Parse JSON from hidden input and update state."""
+    def on_selection_received(e) -> None:
+        """Handle a selection event emitted from the JS canvas."""
+        payload = e.args if hasattr(e, "args") else {}
         try:
-            data = json.loads(e.value)
-            state["selection_start"] = float(data.get("start", 0))
-            state["selection_end"] = float(data.get("end", 0))
-            state["has_selection"] = state["selection_end"] > state["selection_start"]
-        except Exception:
-            state["selection_start"] = 0.0
-            state["selection_end"] = 0.0
-            state["has_selection"] = False
-        update_ui_state()
+            start = float(payload.get("start", 0.0))
+            end = float(payload.get("end", 0.0))
+        except (TypeError, ValueError):
+            return
+
+        state["selection_start"] = start
+        state["selection_end"] = end
+        state["has_selection"] = end > start
+
+        # Update the selection readout label if it exists
+        if selection_label is not None:
+            try:
+                if end > start:
+                    selection_label.set_text(
+                        f"Selection: {start:.2f}s \u2013 {end:.2f}s ({end - start:.2f}s)"
+                    )
+                else:
+                    selection_label.set_text("No selection")
+            except RuntimeError:
+                pass
+
+        # Enable or disable the operation buttons
+        has_selection = end > start
+        for btn in (trim_btn, delete_btn):
+            if btn is None:
+                continue
+            try:
+                if has_selection:
+                    btn.enable()
+                else:
+                    btn.disable()
+            except RuntimeError:
+                pass
 
     def do_play() -> None:
         """Start playback of the working file."""
@@ -372,18 +416,28 @@ def view():
             # Get metadata
             meta = get_metadata(temp_path)
 
-            # Create working copy
-            working = new_working_copy(temp_path)
+            # Create session dir first, then working copy inside it
+            from bookforge.audio.editor import new_session_dir
+            session_dir = new_session_dir()
+            state["session_dir"] = session_dir
 
-            # Create session dir for snapshots
-            from bookforge.audio.editor import _ensure_session_dir
-            session_dir = _ensure_session_dir()
+            working = new_working_copy(temp_path, session_dir=session_dir)
+            print(f"[AudioStudio] Working copy created: {working} exists={working.exists()}")
+
+            # Fail loudly if the working file wasn't created
+            if not working.exists():
+                safe_notify(
+                    f"Working file was not created: {working}",
+                    type="negative",
+                )
+                return
+            print(f"[AudioStudio] handle_upload confirmed working file exists: {working}")
 
             # Extract peaks
             peaks = extract_peaks(working)
 
-            # Update state
-            state["source_path"] = temp_path
+            # Update state - store resolved paths
+            state["source_path"] = temp_path.resolve()
             state["working_path"] = working
             state["duration"] = meta["duration"]
             state["peaks"] = peaks
@@ -392,7 +446,7 @@ def view():
             state["has_selection"] = False
             state["undo_stack"] = []
             state["redo_stack"] = []
-            state["session_dir"] = None
+            state["session_dir"] = str(session_dir)
 
             # Update UI
             if metadata_label:
@@ -418,12 +472,18 @@ def view():
 
     def do_trim() -> None:
         """Trim working file to current selection."""
+        print(f"[AudioStudio.view] do_trim: working={state.get('working_path')}")
+        print(f"[AudioStudio.view]   exists: {Path(state['working_path']).exists() if state.get('working_path') else 'no path'}")
+
         if not state["has_selection"] or not state["working_path"]:
             safe_notify("No selection to trim", type="warning")
             return
 
-        start = state["selection_start"]
-        end = state["selection_end"]
+        start = max(0.0, float(state.get("selection_start", 0.0)))
+        end = min(float(state.get("duration", 0.0)), float(state.get("selection_end", 0.0)))
+        if end - start < 0.05:
+            safe_notify("Selection is too small to operate on.", type="warning")
+            return
 
         # Snapshot for undo
         session_dir = Path(state["session_dir"]) if state["session_dir"] else None
@@ -432,7 +492,9 @@ def view():
             session_dir = _ensure_session_dir()
             state["session_dir"] = str(session_dir)
 
+        print(f"[AudioStudio.view] do_trim about to snapshot {state.get('working_path')}")
         snap = snapshot(state["working_path"], session_dir)
+        print(f"[AudioStudio.view] do_trim snapshot returned: {snap}")
         state["undo_stack"].append(str(snap))
         state["redo_stack"].clear()
 
@@ -455,19 +517,38 @@ def view():
         state["selection_end"] = 0.0
         state["has_selection"] = False
 
+        # Clear selection state and disable buttons
+        try:
+            if selection_label is not None:
+                selection_label.set_text("No selection")
+            if trim_btn is not None:
+                trim_btn.disable()
+            if delete_btn is not None:
+                delete_btn.disable()
+        except RuntimeError:
+            pass
+
         set_audio_source(state["working_path"])
         push_peaks_to_js()
         update_ui_state()
         safe_notify("Trimmed", type="positive")
+        print(f"[AudioStudio.view] do_trim complete: working={state.get('working_path')}")
+        print(f"[AudioStudio.view]   exists: {Path(state['working_path']).exists() if state.get('working_path') else 'no path'}")
 
     def do_delete() -> None:
         """Delete the current selection."""
+        print(f"[AudioStudio.view] do_delete: working={state.get('working_path')}")
+        print(f"[AudioStudio.view]   exists: {Path(state['working_path']).exists() if state.get('working_path') else 'no path'}")
+
         if not state["has_selection"] or not state["working_path"]:
             safe_notify("No selection to delete", type="warning")
             return
 
-        start = state["selection_start"]
-        end = state["selection_end"]
+        start = max(0.0, float(state.get("selection_start", 0.0)))
+        end = min(float(state.get("duration", 0.0)), float(state.get("selection_end", 0.0)))
+        if end - start < 0.05:
+            safe_notify("Selection is too small to operate on.", type="warning")
+            return
 
         # Snapshot for undo
         session_dir = Path(state["session_dir"]) if state["session_dir"] else None
@@ -476,7 +557,9 @@ def view():
             session_dir = _ensure_session_dir()
             state["session_dir"] = str(session_dir)
 
+        print(f"[AudioStudio.view] do_delete about to snapshot {state.get('working_path')}")
         snap = snapshot(state["working_path"], session_dir)
+        print(f"[AudioStudio.view] do_delete snapshot returned: {snap}")
         state["undo_stack"].append(str(snap))
         state["redo_stack"].clear()
 
@@ -498,10 +581,23 @@ def view():
         state["selection_end"] = 0.0
         state["has_selection"] = False
 
+        # Clear selection state and disable buttons
+        try:
+            if selection_label is not None:
+                selection_label.set_text("No selection")
+            if trim_btn is not None:
+                trim_btn.disable()
+            if delete_btn is not None:
+                delete_btn.disable()
+        except RuntimeError:
+            pass
+
         set_audio_source(state["working_path"])
         push_peaks_to_js()
         update_ui_state()
         safe_notify("Deleted", type="positive")
+        print(f"[AudioStudio.view] do_delete complete: working={state.get('working_path')}")
+        print(f"[AudioStudio.view]   exists: {Path(state['working_path']).exists() if state.get('working_path') else 'no path'}")
 
     def do_undo() -> None:
         """Restore previous snapshot."""
@@ -640,6 +736,9 @@ def view():
         update_ui_state()
         safe_notify("Cleared", type="info")
 
+    # Register event handler after all nested functions are defined
+    ui.on("studio_selection", on_selection_received)
+
     # ---- UI ----
     with container:
         ui.label("🎚 Audio Studio").classes("text-h5 q-mb-sm")
@@ -662,10 +761,6 @@ def view():
         # ---- Waveform card ----
         with ui.card().classes("w-full q-mb-md"):
             ui.label("Waveform").classes("text-h6")
-
-            # Hidden input for selection sync
-            selection_input = ui.input(value="").props('type="hidden" id="studio_selection"')
-            selection_input.on_value_change(on_selection_change)
 
             # Canvas + audio player
             with ui.row().classes("w-full items-center"):
@@ -699,7 +794,9 @@ def view():
             ui.label("Operations").classes("text-h6")
             with ui.row().classes("q-my-sm"):
                 trim_btn = ui.button("Trim to selection", on_click=do_trim).props("color=primary")
+                trim_btn.disable()
                 delete_btn = ui.button("Delete selection", on_click=do_delete).props("color=negative")
+                delete_btn.disable()
             with ui.row().classes("q-my-sm"):
                 undo_btn = ui.button("Undo", on_click=do_undo).props("flat color=primary")
                 redo_btn = ui.button("Redo", on_click=do_redo).props("flat color=primary")

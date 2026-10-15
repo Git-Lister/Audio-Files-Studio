@@ -68,6 +68,8 @@ def view():
     review_card: ui.card | None = None
     action_row: ui.row | None = None
     smart_btn: ui.button | None = None
+    instructions_input: ui.textarea | None = None
+    preview_label: ui.label | None = None
 
     # ---- Helpers ----
     def enabled_rule_keys() -> set[str]:
@@ -163,7 +165,10 @@ def view():
         _start = time.monotonic()
         try:
             executor = LLMExecutor()
-            result = await asyncio.to_thread(executor.classify_lines, current_text)
+            instructions = instructions_input.value if instructions_input else None
+            result = await asyncio.to_thread(
+                lambda: executor.classify_lines(current_text, instructions)
+            )
         except Exception as ex:
             safe_notify(f"LLM classification failed: {ex}", type="negative")
             if smart_btn is not None:
@@ -191,6 +196,7 @@ def view():
                 model_name=result.model_name,
                 source_name=state.get("source_name"),
                 elapsed_seconds=_elapsed,
+                user_instructions=instructions,
             )
             state["current_run_id"] = run_id
         except Exception as ex:
@@ -448,6 +454,11 @@ def view():
                 text_area.value = ""
             except RuntimeError:
                 pass
+        if instructions_input is not None:
+            try:
+                instructions_input.value = ""
+            except RuntimeError:
+                pass
         if review_card is not None:
             try:
                 review_card.visible = False
@@ -458,7 +469,7 @@ def view():
                 action_row.visible = False
             except RuntimeError:
                 pass
-        update_status("Discarded. Ready for a new file.", "info")
+            update_status("Discarded. Ready for a new file.", "info")
 
     def undo_llm() -> None:
         pre = state.get("pre_llm_text")
@@ -467,6 +478,17 @@ def view():
         set_textarea_programmatically(pre)
         state["pre_llm_text"] = None
         update_status("Reverted Smart Cleanup.", "info")
+
+    def _update_prompt_preview() -> None:
+        if preview_label is None:
+            return
+        try:
+            from bookforge.llm.prompts import build_system_prompt
+            instructions = instructions_input.value if instructions_input else ""
+            composed = build_system_prompt(instructions)
+            preview_label.set_text(composed)
+        except RuntimeError:
+            pass
 
     # ---- UI ----
     with container:
@@ -509,6 +531,28 @@ def view():
                     with cb:
                         ui.tooltip(rule.description)
                     rule_checkboxes[rule.key] = cb
+
+        # --- Instructions card (optional, for Smart Cleanup) ---
+        with ui.card().classes("w-full q-mb-md"):
+            ui.label("Smart Cleanup instructions (optional)").classes("text-h6")
+            ui.markdown(
+                "_Tell the model what to look for. Leave blank for generic cleanup. "
+                "Examples: 'remove running headers and page numbers', "
+                "'strip stage directions and time markers', "
+                "'remove footnotes but keep the bibliography'._"
+            )
+            instructions_input = ui.textarea(
+                placeholder="Leave blank for default behavior.",
+            ).props("rows=3 outlined").classes("w-full")
+            instructions_input.on_value_change(lambda _: _update_prompt_preview())
+
+            with ui.expansion("Preview composed prompt", icon="preview") as preview_expansion:
+                preview_label = ui.label("").classes(
+                    "text-caption font-mono whitespace-pre-line"
+                )
+
+        # Call once so initial state shows
+        _update_prompt_preview()
 
         # --- Action row (hidden until upload) ---
         with ui.row().classes("q-mb-md gap-2") as action_row:
