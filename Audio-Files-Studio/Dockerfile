@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -42,26 +42,25 @@ RUN pip install "transformers==4.42.4"
 # Install Coqui TTS (let pip resolve compatible sub-deps)
 RUN pip install "TTS"
 
-# Build llama-cpp-python from source with AVX2-only CPU flags.
+# Build llama-cpp-python from source with AVX2 + CUDA flags.
 # The prebuilt wheels ship AVX512 code that crashes on CPUs lacking it
 # (e.g. Ryzen 3000-series). Explicit flags force a portable binary.
-# llama-cpp-python source build, CPU-only, with AVX2-explicit flags.
+# llama-cpp-python source build, with explicit AVX2 and CUDA flags.
 #
 # The prebuilt CUDA wheel from abetlen.github.io crashes with SIGILL on
 # Ryzen 3000-series CPUs (no AVX512). The wheel is compiled with
 # -march=native on the builder's machine, which bakes in AVX512.
 #
 # This build forces the modern ggml flags (GGML_*, not the deprecated LLAMA_*)
-# and disables native CPU detection. CUDA is off to avoid needing the devel
-# base image; a follow-up batch can re-enable CUDA by switching to
-# nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04 if CPU inference proves too slow.
+# and disables native CPU detection. CUDA is enabled via the devel base image,
+# which includes the nvcc compiler required to build the CUDA backend.
 RUN CMAKE_ARGS="-DGGML_NATIVE=off \
     -DGGML_AVX=on \
     -DGGML_AVX2=on \
     -DGGML_AVX512=off \
     -DGGML_F16C=on \
     -DGGML_FMA=on \
-    -DGGML_CUDA=off" \
+    -DGGML_CUDA=on" \
     pip install llama-cpp-python --no-binary llama-cpp-python --no-cache-dir
 
 # Verify the stack before copying app code

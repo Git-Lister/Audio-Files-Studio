@@ -19,11 +19,12 @@ Rules:
 - Author names and affiliations at the very top of an academic paper should be removed.
 - References and bibliography entries should be classified as "keep" (the user decides whether to include them).
 - When in doubt, use "uncertain".
+- Keep output compact. Each decision must fit on one line of JSON.
 
 Output: a JSON object with one key, "line_decisions", an array. Each element has:
   - "index": the line number (integer, matches the input)
   - "action": one of "keep", "remove", "heading", "uncertain"
-  - "reason": a short phrase (max 8 words)
+  - "reason": a short phrase (max 5 words). Be concise.
   - "confidence": "high", "medium", or "low"
 
 Return only the JSON object, no other text."""

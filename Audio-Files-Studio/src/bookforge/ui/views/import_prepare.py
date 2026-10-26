@@ -60,6 +60,9 @@ def view():
         "pre_llm_text": None,
         # NEW: track the current LLM run for later update
         "current_run_id": None,
+        # NEW: LLM inference progress shared between executor thread and UI
+        "llm_progress": 0.0,
+        "llm_total": 0,
     }
 
     rule_checkboxes: dict[str, ui.checkbox] = {}
@@ -70,6 +73,10 @@ def view():
     smart_btn: ui.button | None = None
     instructions_input: ui.textarea | None = None
     preview_label: ui.label | None = None
+    view_toggle = None
+    progress_area = None
+    progress_label = None
+    progress_bar = None
 
     # ---- Helpers ----
     def enabled_rule_keys() -> set[str]:
@@ -107,6 +114,16 @@ def view():
         if e.value != state["last_programmatic"]:
             state["dirty"] = True
 
+    def on_view_toggle(e) -> None:
+        if not text_area:
+            return
+        if e.value == "original":
+            text_area.value = state["raw_extraction"]
+            text_area.props("readonly")
+        else:
+            text_area.value = state["last_programmatic"]
+            text_area.props(remove="readonly")
+
     def run_cleanup() -> str:
         return clean(state["raw_extraction"], enabled_rule_keys())
 
@@ -128,6 +145,22 @@ def view():
         update_status(
             f"Reset to raw extraction ({len(state['raw_extraction']):,} chars).",
             "info",
+        )
+
+    def on_llm_progress(processed: int, total: int):
+        """Called from the executor thread. Updates shared state only."""
+        state["llm_total"] = total
+        state["llm_progress"] = processed / total if total > 0 else 0.0
+
+    def update_progress_ui():
+        """Called by the UI timer. Updates the UI safely."""
+        if not progress_area or not progress_area.visible:
+            return
+        processed = int(state["llm_progress"] * state["llm_total"])
+        total = state["llm_total"]
+        progress_bar.set_value(state["llm_progress"])
+        progress_label.set_text(
+            f"LLM classifying: {processed} / {total} lines ({state['llm_progress']*100:.1f}%)"
         )
 
     async def smart_cleanup() -> None:
@@ -162,12 +195,22 @@ def view():
             except RuntimeError:
                 pass
 
+        if progress_area is not None:
+            progress_area.visible = True
+        state["llm_progress"] = 0.0
+        state["llm_total"] = len(current_text.splitlines())
+        if progress_bar is not None:
+            progress_bar.set_value(0.0)
+        timer = ui.timer(0.5, update_progress_ui)
+
         _start = time.monotonic()
         try:
             executor = LLMExecutor()
             instructions = instructions_input.value if instructions_input else None
             result = await asyncio.to_thread(
-                lambda: executor.classify_lines(current_text, instructions)
+                lambda: executor.classify_lines(
+                    current_text, instructions, on_llm_progress
+                )
             )
         except Exception as ex:
             safe_notify(f"LLM classification failed: {ex}", type="negative")
@@ -177,6 +220,10 @@ def view():
                 except RuntimeError:
                     pass
             return
+        finally:
+            timer.active = False
+            if progress_area is not None:
+                progress_area.visible = False
         _elapsed = time.monotonic() - _start
 
         # Persist the run
@@ -403,6 +450,13 @@ def view():
         state["source_name"] = e.file.name
         update_status(f"Extracted {len(raw):,} chars from {e.file.name}.", "positive")
 
+        # Reset view toggle to the cleaned view on a new upload
+        if view_toggle is not None:
+            try:
+                view_toggle.value = "cleaned"
+            except RuntimeError:
+                pass
+
         # Auto-run cleanup once
         do_reclean()
 
@@ -554,6 +608,15 @@ def view():
         # Call once so initial state shows
         _update_prompt_preview()
 
+        # --- Progress area (hidden by default) ---
+        progress_area = ui.column().classes("w-full q-mb-md")
+        progress_area.visible = False
+        with progress_area:
+            progress_label = ui.label("Preparing...").classes("text-caption")
+            progress_bar = ui.linear_progress(value=0.0).props(
+                "size=15px color=primary rounded"
+            )
+
         # --- Action row (hidden until upload) ---
         with ui.row().classes("q-mb-md gap-2") as action_row:
             action_row.visible = False
@@ -577,6 +640,10 @@ def view():
             review_card.visible = False
             ui.label("3. Review & edit").classes("text-h6")
             ui.markdown("_Edit freely. Your manual changes are what gets saved._")
+            view_toggle = ui.toggle(
+                {"cleaned": "View Cleaned", "original": "View Original"}
+            ).props("no-caps").classes("q-mb-sm")
+            view_toggle.on_value_change(on_view_toggle)
             text_area = ui.textarea().props("rows=30 outlined").classes("w-full font-mono")
             text_area.on_value_change(on_textarea_change)
 
