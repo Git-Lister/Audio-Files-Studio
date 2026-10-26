@@ -13,6 +13,22 @@ from pathlib import Path
 
 from nicegui import ui
 
+
+def _audio_url(path: Path) -> str:
+    """Convert an absolute filesystem path to a NiceGUI-servable URL path.
+
+    NiceGUI serves files relative to the app root (CWD in the container).
+    Absolute paths like /app/temp/... produce URLs like /app/temp/...
+    which the static file server cannot resolve. We want URLs like
+    /temp/... instead, so strip the app root prefix.
+    """
+    try:
+        rel = path.relative_to(Path.cwd())
+        return f"/{rel.as_posix()}"
+    except ValueError:
+        # Path is not under CWD; return as-is and hope NiceGUI can serve it.
+        return path.as_posix()
+
 from bookforge.audio.editor import delete_range, new_working_copy, snapshot, trim
 from bookforge.audio.peaks import TEMP_STUDIO_DIR, extract_peaks, get_metadata, get_duration
 from bookforge.ui.components import safe_notify
@@ -232,8 +248,10 @@ def view():
 
     # ---- View state ----
     state = {
-        "source_path": None,       # original uploaded file
-        "working_path": None,      # working copy (edited)
+        "source_path": None,
+        "source_url": None,        # NEW: for NiceGUI serving
+        "working_path": None,      # absolute, for editor operations
+        "working_url": None,       # NEW: for NiceGUI serving
         "duration": 0.0,
         "peaks": [],               # list of (min, max) tuples
         "selection_start": 0.0,
@@ -385,12 +403,13 @@ def view():
         """Update audio player source with cache-busting."""
         if audio_player:
             try:
+                url = _audio_url(path)
                 # Add query param to bust cache
-                audio_player.set_source(str(path) + f"?v={uuid.uuid4().hex[:8]}")
+                audio_player.set_source(url + f"?v={uuid.uuid4().hex[:8]}")
             except RuntimeError:
                 pass
         # Debug log
-        print(f"[AudioStudio] Set audio source to: {path}")
+        print(f"[AudioStudio] Set audio source to: {path} -> URL {_audio_url(path)}")
 
     def push_peaks_to_js():
         """Send peaks data to JavaScript for waveform rendering."""
@@ -438,7 +457,9 @@ def view():
 
             # Update state - store resolved paths
             state["source_path"] = temp_path.resolve()
+            state["source_url"] = _audio_url(temp_path.resolve())
             state["working_path"] = working
+            state["working_url"] = _audio_url(working)
             state["duration"] = meta["duration"]
             state["peaks"] = peaks
             state["selection_start"] = 0.0
