@@ -208,7 +208,7 @@ class PipelineState:
                 )
                 ui.button("View Log", icon="article", on_click=self.show_log)
                 self.graceful_stop_btn = ui.button(
-                    "Stop after current chunk",
+                    "Pause",
                     icon="pause_circle",
                     color="warning",
                     on_click=self.graceful_stop,
@@ -326,6 +326,11 @@ class PipelineState:
         if proc is None or proc.book_text is None:
             safe_notify("No prepared book.", type="negative")
             return
+
+        # Reset stop flags so we can resume
+        proc.stop_requested = False
+        proc.graceful_stop_requested = False
+
         set_progress_dict({"active": True})  # keep for backwards compat
         self._set_processing(True)
         try:
