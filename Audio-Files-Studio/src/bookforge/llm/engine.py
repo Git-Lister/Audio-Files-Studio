@@ -76,7 +76,7 @@ class LLMEngine:
                     model_path=str(local_path),
                     n_gpu_layers=self._n_gpu_layers,
                     n_ctx=self._n_ctx,
-                    verbose=False,
+                    verbose=True,
                 )
             else:
                 logger.info(
@@ -88,7 +88,7 @@ class LLMEngine:
                     filename=self._filename,
                     n_gpu_layers=self._n_gpu_layers,
                     n_ctx=self._n_ctx,
-                    verbose=False,
+                    verbose=True,
                 )
             logger.info("LLM loaded.")
 

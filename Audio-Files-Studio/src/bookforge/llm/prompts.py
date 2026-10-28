@@ -30,7 +30,7 @@ Output: a JSON object with one key, "line_decisions", an array. Each element has
 Return only the JSON object, no other text."""
 
 
-def build_system_prompt(user_instructions: str | None = None) -> str:
+def build_system_prompt(user_instructions: str | None = None, document_type: str | None = None) -> str:
     """Compose the system prompt from the base rules plus optional user
     instructions.
 
@@ -41,6 +41,28 @@ def build_system_prompt(user_instructions: str | None = None) -> str:
     enforce precedence here.
     """
     base = EXECUTOR_SYSTEM_PROMPT
+
+    type_rules = {
+        "Academic": (
+            "\n\nDOCUMENT CONTEXT: ACADEMIC PAPER.\n"
+            "This is an academic paper. Remove running headers, page numbers, "
+            "footnotes, and inline citation numbers. Be aggressive about stripping metadata."
+        ),
+        "Fiction": (
+            "\n\nDOCUMENT CONTEXT: FICTION.\n"
+            "This is a novel or story. Keep all prose, including chapter headings and "
+            "author notes. Only remove obvious printing artifacts."
+        ),
+        "Script": (
+            "\n\nDOCUMENT CONTEXT: REHEARSAL SCRIPT.\n"
+            "This is a script. Remove stage directions in brackets [like this], "
+            "time markers [00:15], and pause notations (//). Keep only the spoken dialogue."
+        ),
+    }
+
+    if document_type and document_type in type_rules:
+        base += type_rules[document_type]
+
     if not user_instructions or not user_instructions.strip():
         return base
 

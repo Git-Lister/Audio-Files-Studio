@@ -109,7 +109,7 @@ ui.add_body_html("""
         }
 
         // Playhead
-        const audio = document.querySelector('audio');
+        const audio = document.getElementById('studio_audio');
         if (audio && studioDuration > 0) {
             const px = (audio.currentTime / studioDuration) * w;
             ctx.strokeStyle = playheadColor;
@@ -122,7 +122,7 @@ ui.add_body_html("""
     };
 
     window.updateStudioPlayhead = function() {
-        const audio = document.querySelector('audio');
+        const audio = document.getElementById('studio_audio');
         if (audio) {
             const t = audio.currentTime;
             const total = studioDuration;
@@ -197,7 +197,7 @@ ui.add_body_html("""
                 // Single click -> seek
                 if (studioDuration > 0) {
                     const t = (x / w) * studioDuration;
-                    const audio = document.querySelector('audio');
+                    const audio = document.getElementById('studio_audio');
                     if (audio) audio.currentTime = t;
                 }
                 studioSelectionStart = 0;
@@ -225,6 +225,21 @@ ui.add_body_html("""
 def _sanitise_filename(name: str) -> str:
     """Replace non-filename-safe characters with underscores."""
     return re.sub(r"[^a-zA-Z0-9 _.-]", "_", name)
+
+
+def _audio_url(path: Path) -> str:
+    """Map a filesystem path under temp/ to the /temp static URL.
+
+    main.py serves the `temp/` directory at the `/temp` URL prefix via
+    `app.add_static_files("/temp", Path("temp"))`. Working copies live
+    under temp/studio/sessions/..., so we convert an absolute path back
+    to a URL the browser can fetch.
+    """
+    try:
+        rel = path.resolve().relative_to(Path("temp").resolve())
+    except ValueError:
+        rel = path
+    return "/temp/" + rel.as_posix()
 
 
 def view():
@@ -350,19 +365,16 @@ def view():
 
     def do_play() -> None:
         """Start playback of the working file."""
+        print("[AudioStudio] Play button clicked")
         if not state["working_path"]:
             safe_notify("No file loaded", type="warning")
             return
         ui.run_javascript("""
             (function() {
-                const a = document.querySelector('audio');
-                if (!a) {
-                    console.warn('Audio Studio: no <audio> element found');
-                    return;
-                }
-                a.play().catch(function(err) {
-                    console.error('Audio Studio: play() rejected:', err);
-                });
+                const a = document.getElementById('studio_audio');
+                if (!a) { console.warn('AudioStudio: no #studio_audio element found'); return; }
+                console.log('AudioStudio: attempting play on', a.src);
+                a.play().catch(function(err) { console.error('AudioStudio: play() rejected:', err); });
             })();
         """)
 
@@ -370,7 +382,7 @@ def view():
         """Stop playback and return to the start."""
         ui.run_javascript("""
             (function() {
-                const a = document.querySelector('audio');
+                const a = document.getElementById('studio_audio');
                 if (!a) return;
                 a.pause();
                 a.currentTime = 0;
@@ -382,15 +394,12 @@ def view():
         """)
 
     def set_audio_source(path: Path):
-        """Update audio player source with cache-busting."""
-        if audio_player:
-            try:
-                # Add query param to bust cache
-                audio_player.set_source(str(path) + f"?v={uuid.uuid4().hex[:8]}")
-            except RuntimeError:
-                pass
-        # Debug log
-        print(f"[AudioStudio] Set audio source to: {path}")
+        """Update audio player source, explicitly refreshing the element."""
+        url = _audio_url(path) if path.is_absolute() else f"/{path.as_posix()}"
+        print(f"[AudioStudio] set_audio_source: {path} -> URL {url}")
+        if audio_player is not None:
+            audio_player.set_source(url)
+            audio_player.update()
 
     def push_peaks_to_js():
         """Send peaks data to JavaScript for waveform rendering."""
@@ -771,10 +780,8 @@ def view():
                 </div>
                 """)
 
-            # Hidden audio player for playback (positioned off-screen but kept in DOM for play())
-            audio_player = ui.audio("").classes("w-full").style(
-                "position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0;"
-            )
+            # Hidden audio player for playback (kept in DOM for play())
+            audio_player = ui.audio("").props('id="studio_audio"').classes("hidden")
 
             # Playback controls
             with ui.row().classes("items-center gap-2 q-mt-md"):

@@ -74,6 +74,7 @@ def view():
     instructions_input: ui.textarea | None = None
     preview_label: ui.label | None = None
     view_toggle = None
+    doc_type_select = None
     progress_area = None
     progress_label = None
     progress_bar = None
@@ -120,9 +121,11 @@ def view():
         if e.value == "original":
             text_area.value = state["raw_extraction"]
             text_area.props("readonly")
+            state["dirty"] = False
         else:
             text_area.value = state["last_programmatic"]
             text_area.props(remove="readonly")
+            state["dirty"] = False
 
     def run_cleanup() -> str:
         return clean(state["raw_extraction"], enabled_rule_keys())
@@ -203,13 +206,23 @@ def view():
             progress_bar.set_value(0.0)
         timer = ui.timer(0.5, update_progress_ui)
 
+        doc_type = doc_type_select.value if doc_type_select else "Generic"
+        if doc_type == "Academic":
+            cb = rule_checkboxes.get("strip_references_section")
+            if cb and not cb.value:
+                cb.value = True
+                safe_notify("Enabled 'Remove References section' for Academic mode.", type="info")
+
         _start = time.monotonic()
         try:
             executor = LLMExecutor()
             instructions = instructions_input.value if instructions_input else None
             result = await asyncio.to_thread(
                 lambda: executor.classify_lines(
-                    current_text, instructions, on_llm_progress
+                    current_text,
+                    user_instructions=instructions,
+                    document_type=doc_type,
+                    progress_callback=on_llm_progress,
                 )
             )
         except Exception as ex:
@@ -595,6 +608,16 @@ def view():
                 "'strip stage directions and time markers', "
                 "'remove footnotes but keep the bibliography'._"
             )
+            ui.label("Document Type").classes("text-subtitle2")
+            doc_type_select = ui.select(
+                options={
+                    "Generic": "Generic / Unknown",
+                    "Academic": "Academic Paper",
+                    "Fiction": "Novel / Fiction",
+                    "Script": "Rehearsal Script"
+                },
+                value="Generic",
+            ).classes("w-full q-mb-sm")
             instructions_input = ui.textarea(
                 placeholder="Leave blank for default behavior.",
             ).props("rows=3 outlined").classes("w-full")
