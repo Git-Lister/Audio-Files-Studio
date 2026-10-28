@@ -400,16 +400,13 @@ def view():
         """)
 
     def set_audio_source(path: Path):
-        """Update audio player source with cache-busting."""
-        if audio_player:
-            try:
-                url = _audio_url(path)
-                # Add query param to bust cache
-                audio_player.set_source(url + f"?v={uuid.uuid4().hex[:8]}")
-            except RuntimeError:
-                pass
-        # Debug log
-        print(f"[AudioStudio] Set audio source to: {path} -> URL {_audio_url(path)}")
+        url = _audio_url(path) if path.is_absolute() else f"/{path.as_posix()}"
+        # Append a cache-buster so the browser doesn't serve stale audio after an edit
+        url = f"{url}?v={uuid.uuid4().hex[:8]}"
+        print(f"[AudioStudio] set_audio_source: {path} -> URL {url}")
+        if audio_player is not None:
+            audio_player.set_source(url)
+            audio_player.update()
 
     def push_peaks_to_js():
         """Send peaks data to JavaScript for waveform rendering."""
