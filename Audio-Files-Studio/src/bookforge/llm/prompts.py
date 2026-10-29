@@ -12,13 +12,10 @@ Your task: given a numbered list of lines, classify each line as one of:
 - "uncertain": you cannot confidently classify this line.
 
 Rules:
-- Preserve the author's prose. Never suggest removing anything that is part of the narrative or argument.
-- Running headers (e.g. a journal name followed by a volume number) should be removed.
-- Standalone page numbers should be removed.
-- URLs, DOIs, and email addresses should be removed.
-- Author names and affiliations at the very top of an academic paper should be removed.
-- References and bibliography entries should be classified as "keep" (the user decides whether to include them).
-- When in doubt, use "uncertain".
+- Preserve the author's prose. Never suggest removing anything that is part of the narrative, argument, or dialogue.
+- Running headers are usually short, repetitive lines at the very top or bottom of a page (e.g., "The Library of Babel 15"). Do NOT remove sentences that contain punctuation, verbs, or dialogue.
+- If a line contains a full sentence, DO NOT remove it.
+- When in doubt, ALWAYS use "keep" or "uncertain". It is better to leave a page number in than to delete a paragraph.
 - Keep output compact. Each decision must fit on one line of JSON.
 
 Output: a JSON object with one key, "line_decisions", an array. Each element has:
@@ -50,8 +47,9 @@ def build_system_prompt(user_instructions: str | None = None, document_type: str
         ),
         "Fiction": (
             "\n\nDOCUMENT CONTEXT: FICTION.\n"
-            "This is a novel or story. Keep all prose, including chapter headings and "
-            "author notes. Only remove obvious printing artifacts."
+            "This is a novel or story. Keep ALL prose, including chapter headings and "
+            "author notes. Only remove obvious printing artifacts like standalone numbers or "
+            "copyright blocks. NEVER remove a line just because it is short."
         ),
         "Script": (
             "\n\nDOCUMENT CONTEXT: REHEARSAL SCRIPT.\n"

@@ -31,6 +31,7 @@ from ..config import PresetConfig
 from ..process.chunker import Chunk
 from ..process.sanitize import sanitise_for_tts
 from .backend import TTSBackend
+from .exceptions import CudaDeviceAssertError
 
 logger = logging.getLogger("bookforge.tts.xtts")
 
@@ -95,6 +96,8 @@ def _preprocess_audio(input_path: Path, output_path: Path) -> None:
 
 
 class XTTSBackend(TTSBackend):
+    name: str = "xtts"
+
     def __init__(
         self,
         model_name: str = "tts_models/multilingual/multi-dataset/xtts_v2",
@@ -141,6 +144,10 @@ class XTTSBackend(TTSBackend):
         logger.info(f"Loading XTTS model '{model_name}' on {device}...")
         self.tts = TTS(model_name).to(device)
         logger.info("XTTS model loaded.")
+
+    def load_model(self) -> None:
+        # Model is loaded eagerly in __init__; nothing to do here.
+        return
 
     @property
     def device(self) -> str:
@@ -244,22 +251,36 @@ class XTTSBackend(TTSBackend):
                 self._synthesise_directly(text, file_path)
                 return
             except Exception as e:
+                err_str = str(e)
+                # Check for the fatal CUDA device-side assert
+                if "device-side assert" in err_str or "CUDA error" in err_str:
+                    logger.error(f"FATAL: CUDA context corrupted. Aborting retries. {err_str}")
+                    raise CudaDeviceAssertError(
+                        "GPU context corrupted by extreme audio parameters. "
+                        "Please restart the container to continue."
+                    ) from e
+
                 logger.warning(f"Synthesis attempt {attempt}/{self._retries} failed: {e}")
                 if attempt == self._retries:
-                    raise RuntimeError(
-                        f"All {self._retries} attempts failed for text: {text[:50]}..."
-                    ) from e
+                    raise RuntimeError(f"All {self._retries} attempts failed: {e}") from e
                 time.sleep(self._retry_delay * (2 ** (attempt - 1)))
 
     def _synthesise_directly(self, text: str, file_path: Path) -> None:
+        # --- Clamp parameters to safe ranges ---
+        # Extreme values can cause NaN probabilities and crash the CUDA context.
+        safe_temp = max(0.1, min(1.0, self._temperature))
+        safe_rep_penalty = max(1.0, min(10.0, self._repetition_penalty))
+        safe_top_p = max(0.1, min(1.0, self._top_p))
+        safe_top_k = max(1, min(100, self._top_k))
+
         kwargs = {
             "text": text,
             "file_path": str(file_path),
-            "temperature": self._temperature,
+            "temperature": safe_temp,
             "length_penalty": self._length_penalty,
-            "repetition_penalty": self._repetition_penalty,
-            "top_p": self._top_p,
-            "top_k": self._top_k,
+            "repetition_penalty": safe_rep_penalty,
+            "top_p": safe_top_p,
+            "top_k": safe_top_k,
             "speed": self._rate,
             "num_beams": self._num_beams,
         }

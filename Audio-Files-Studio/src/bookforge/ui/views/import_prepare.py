@@ -171,10 +171,14 @@ def view():
         a modal for the user to accept or reject proposed changes."""
         if text_area is None:
             return
-        try:
-            current_text = text_area.value or ""
-        except RuntimeError:
-            return
+        if state.get("dirty", False):
+            try:
+                current_text = text_area.value or ""
+            except RuntimeError:
+                return
+            safe_notify("Analysing manually edited text. Rule-based cleanup will be skipped.", type="warning")
+        else:
+            current_text = state["last_programmatic"] or ""
         if not current_text.strip():
             safe_notify("Nothing to analyse — the review pane is empty.", type="warning")
             return
@@ -469,6 +473,13 @@ def view():
                 view_toggle.value = "cleaned"
             except RuntimeError:
                 pass
+
+        # PDF extraction breaks every visual line into its own line, so enable
+        # paragraph reflow by default before the auto-cleanup runs.
+        if suffix == ".pdf":
+            reflow_cb = rule_checkboxes.get("reflow_paragraphs")
+            if reflow_cb is not None:
+                reflow_cb.value = True
 
         # Auto-run cleanup once
         do_reclean()

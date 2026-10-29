@@ -14,8 +14,10 @@ from typing import Optional
 
 from nicegui import app, ui
 
+from bookforge.audio.concat import concat_wavs
 from bookforge.ui import voice_library as lib
 from bookforge.ui.components import safe_notify
+from bookforge.voice_profile import VoiceProfile
 
 # ---- Inject radar JavaScript globally (shared=True) ----
 ui.add_body_html(
@@ -339,6 +341,7 @@ def view(switch_to_gallery_callback=None):
     ui.on("radar_drag", _handle_radar_drag_event)
 
     # ---- State ----
+    state = {"engine": "xtts"}
     voice_id = None
     uploaded_ref_path: Optional[Path] = None
     uploaded_refs: list[Path] = []
@@ -365,6 +368,7 @@ def view(switch_to_gallery_callback=None):
     generate_btn = None
     preview_spinner = None
     audio_player = None
+    engine_select = None
 
     # ---- Helper functions ----
     def set_preview_text(text):
@@ -372,19 +376,30 @@ def view(switch_to_gallery_callback=None):
             preview_textarea.value = text
 
     def set_sliders_from_voice(voice):
-        temp_slider.value = voice.get("temperature", 0.667)
-        length_slider.value = voice.get("length_penalty", 1.0)
-        repeat_slider.value = voice.get("repetition_penalty", 5.0)
-        top_p_slider.value = voice.get("top_p", 0.8)
-        top_k_slider.value = voice.get("top_k", 50)
-        pitch_slider.value = voice.get("pitch", 0.0)
-        rate_slider.value = voice.get("rate", 1.0)
+        profile = VoiceProfile.from_dict(voice)
+
+        # Sync the engine dropdown to the voice's saved backend type.
+        backend = voice.get("backend_type", "xtts")
+        if engine_select is not None:
+            try:
+                engine_select.value = backend
+                state["engine"] = backend
+            except RuntimeError:
+                pass
+
+        temp_slider.value = profile.temperature
+        length_slider.value = profile.length_penalty
+        repeat_slider.value = profile.repetition_penalty
+        top_p_slider.value = profile.top_p
+        top_k_slider.value = profile.top_k
+        pitch_slider.value = profile.pitch
+        rate_slider.value = profile.rate
         normalize_check.value = bool(voice.get("normalize", False))
         name_input.value = voice.get("name", "My Voice")
         desc_input.value = voice.get("description", "")
         tags_input.value = voice.get("tags", "")
         preview_textarea.value = voice.get("preview_text", DEFAULT_PREVIEW)
-        ref_path = voice.get("reference_wav_path")
+        ref_path = profile.reference_wav
         if ref_path and Path(ref_path).exists():
             ref_status.set_text(f"Reference: {Path(ref_path).name}")
         else:
@@ -416,19 +431,27 @@ def view(switch_to_gallery_callback=None):
         if notify:
             safe_notify("Reset to system defaults.", type="info")
 
-    def get_current_params():
-        return {
-            "temperature": float(temp_slider.value),
-            "length_penalty": float(length_slider.value),
-            "repetition_penalty": float(repeat_slider.value),
-            "top_p": float(top_p_slider.value),
-            "top_k": int(top_k_slider.value or 0),
-            "pitch": float(pitch_slider.value),
-            "rate": float(rate_slider.value),
-            "normalize": normalize_check.value,
-            "language": "en",
-            "preset_name": "calm_longform",
-        }
+    def get_current_profile() -> VoiceProfile:
+        return VoiceProfile(
+            backend_type=state["engine"],
+            reference_wav=uploaded_ref_path,
+            temperature=float(temp_slider.value),
+            length_penalty=float(length_slider.value),
+            repetition_penalty=float(repeat_slider.value),
+            top_p=float(top_p_slider.value),
+            top_k=int(top_k_slider.value or 0),
+            pitch=float(pitch_slider.value),
+            rate=float(rate_slider.value),
+            language="en",
+            preset_name="calm_longform",
+        )
+
+    def on_engine_change(e):
+        state["engine"] = e.value
+        is_xtts = e.value == "xtts"
+        for slider in (temp_slider, length_slider, repeat_slider):
+            if slider is not None:
+                slider.enabled = is_xtts
 
     def apply_slider_preset(preset_key: str):
         preset = SLIDER_PRESETS.get(preset_key)
@@ -495,35 +518,11 @@ def view(switch_to_gallery_callback=None):
             safe_notify("Need at least two files to combine.", type="warning")
             return
 
-        import subprocess
-
-        list_file = Path("temp") / "vocalizer_ref_concat_list.txt"
-        list_file.parent.mkdir(exist_ok=True)
-        with open(list_file, "w") as f:
-            for wav in uploaded_refs:
-                f.write(f"file '{wav.absolute()}'\n")
-
         combined_path = Path("temp") / f"combined_ref_{uuid.uuid4().hex[:8]}.wav"
         try:
-            await asyncio.to_thread(
-                subprocess.run,
-                [
-                    "ffmpeg",
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", str(list_file),
-                    "-ar", "24000",
-                    "-ac", "1",
-                    "-c:a", "pcm_s16le",
-                    str(combined_path),
-                    "-y",
-                ],
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError as ex:
-            err = ex.stderr.decode(errors="ignore")[:200] if ex.stderr else "(no stderr)"
-            safe_notify(f"Combine failed: {err}", type="negative")
+            await asyncio.to_thread(concat_wavs, uploaded_refs, combined_path)
+        except (ValueError, RuntimeError) as ex:
+            safe_notify(f"Combine failed: {ex}", type="negative")
             return
 
         uploaded_refs.clear()
@@ -548,19 +547,21 @@ def view(switch_to_gallery_callback=None):
             pass
         try:
             text = preview_textarea.value or DEFAULT_PREVIEW
-            params = get_current_params()
-            ref_path_to_use = uploaded_ref_path
-            if ref_path_to_use is None and voice_id:
+            profile = get_current_profile()
+            if profile.reference_wav is None and voice_id:
                 voice = lib.get_voice(voice_id)
                 if voice and voice.get("reference_wav_path"):
-                    ref_path_to_use = Path(voice["reference_wav_path"])
-            wav_path = await generate_preview(text, params, ref_path_to_use)
+                    profile.reference_wav = Path(voice["reference_wav_path"])
+            from bookforge.tts.exceptions import CudaDeviceAssertError
+            wav_path = await generate_preview(text, profile)
             try:
                 audio_player.set_source(str(wav_path))
             except RuntimeError:
                 pass
             draw_waveform(wav_path)
             safe_notify("Preview generated!", type="positive")
+        except CudaDeviceAssertError as e:
+            safe_notify(str(e), type="negative")
         except Exception as e:
             safe_notify(f"Generation failed: {e}", type="negative")
         finally:
@@ -633,13 +634,18 @@ def view(switch_to_gallery_callback=None):
 
     async def save_voice():
         nonlocal voice_id
+        profile = get_current_profile()
         data = {
             "name": (name_input.value or "").strip() or "Unnamed Voice",
             "description": desc_input.value or "",
             "tags": tags_input.value or "",
             "preview_text": preview_textarea.value or DEFAULT_PREVIEW,
-            **get_current_params(),
+            "normalize": 1 if normalize_check.value else 0,
         }
+        for key, value in profile.to_dict().items():
+            if key == "reference_wav":
+                continue
+            data[key] = value
         # Only overwrite reference_wav_path when a new reference was uploaded this session.
         # Otherwise the existing DB value is preserved (fixes edit-without-reupload wipe).
         if uploaded_ref_path and uploaded_ref_path.exists():
@@ -668,10 +674,9 @@ def view(switch_to_gallery_callback=None):
         # Step 3: bake preview (best-effort -- do not fail the save)
         if ref_for_bake is not None:
             try:
-                params_for_bake = get_current_params()
-                params_for_bake["preset_name"] = "calm_longform"
+                profile_for_bake = get_current_profile()
                 baked_tmp = await generate_preview(
-                    BAKED_PREVIEW_TEXT, params_for_bake, ref_for_bake
+                    BAKED_PREVIEW_TEXT, profile_for_bake, ref_for_bake
                 )
                 import shutil
 
@@ -738,6 +743,13 @@ def view(switch_to_gallery_callback=None):
                         with btn:
                             ui.tooltip(preset["tooltip"])
 
+                ui.label("TTS Engine").classes("text-subtitle2")
+                engine_select = ui.select(
+                    options={"xtts": "XTTS v2 (Artistry)", "f5": "F5-TTS (Speed & Stability)"},
+                    value="xtts",
+                    on_change=on_engine_change,
+                ).classes("w-full q-mb-md")
+
                 ui.label("Voice Character (Radar)").classes("text-h6 text-bold")
                 ui.markdown("_These sliders control the overall personality of the voice._")
 
@@ -802,7 +814,7 @@ def view(switch_to_gallery_callback=None):
                 ui.markdown("_Fine‑tune the sampling strategy. These are not shown on the radar._")
 
                 top_p_label = ui.label("Top‑P (nucleus)").classes("text-caption")
-                top_p_slider = ui.slider(min=0.0, max=1.0, step=0.01, value=0.8).classes("w-full")
+                top_p_slider = ui.slider(min=0.1, max=1.0, step=0.01, value=0.8).classes("w-full")
                 with top_p_slider:
                     ui.tooltip("Sampling diversity. Lower = conservative, picks the safest options. Higher = more varied output. Safe to leave at default.")
                 top_p_label.bind_text_from(
@@ -810,7 +822,7 @@ def view(switch_to_gallery_callback=None):
                 )
 
                 top_k_label = ui.label("Top‑K (diversity)").classes("text-caption")
-                top_k_slider = ui.slider(min=0, max=100, step=1, value=50).classes("w-full")
+                top_k_slider = ui.slider(min=1, max=100, step=1, value=50).classes("w-full")
                 with top_k_slider:
                     ui.tooltip("Candidate pool size at each generation step. Lower = more focused. Higher = more exploratory. Safe to leave at default.")
                 top_k_label.bind_text_from(
@@ -890,7 +902,7 @@ def view(switch_to_gallery_callback=None):
     return container
 
 
-async def generate_preview(text: str, params: dict, ref_wav_path: Optional[Path] = None) -> Path:
+async def generate_preview(text: str, profile: VoiceProfile, ref_wav_path: Optional[Path] = None) -> Path:
     """Generate a preview WAV and return its path."""
     from bookforge.config import PresetConfig
     from bookforge.process.chunker import Chunk
@@ -900,30 +912,14 @@ async def generate_preview(text: str, params: dict, ref_wav_path: Optional[Path]
     temp_dir.mkdir(exist_ok=True)
     out_path = temp_dir / f"preview_{int(datetime.now(timezone.utc).timestamp())}.wav"
 
-    backend_type = "xtts"
-    speaker_wav = ref_wav_path if ref_wav_path and ref_wav_path.exists() else None
-    tts_backend = await asyncio.to_thread(
-        get_backend,
-        backend_type=backend_type,
-        speaker_wav=speaker_wav,
-        **{
-            k: v
-            for k, v in params.items()
-            if k
-            in [
-                "temperature",
-                "length_penalty",
-                "repetition_penalty",
-                "top_p",
-                "top_k",
-                "language",
-                "pitch",
-                "rate",
-            ]
-        },
-    )
+    data = profile.to_dict()
+    if ref_wav_path is not None and ref_wav_path.exists():
+        data["reference_wav"] = str(ref_wav_path)
+    profile = VoiceProfile.from_dict(data)
 
-    config = PresetConfig.load(params.get("preset_name", "calm_longform"))
+    tts_backend = await asyncio.to_thread(get_backend, profile)
+
+    config = PresetConfig.load(profile.preset_name)
     chunk = Chunk(id=9999, chapter_index=0, relative_index=0, text=text, estimated_seconds=10.0)
     await asyncio.to_thread(tts_backend.synthesize_chunk, chunk, config, out_path)
     return out_path

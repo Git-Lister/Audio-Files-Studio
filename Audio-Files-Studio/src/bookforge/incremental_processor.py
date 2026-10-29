@@ -19,6 +19,7 @@ from .process.chunker import Chunk, chunk_chapter
 from .process.cleaner import clean_text
 from .project import BookProject
 from .tts.backend import TTSBackend
+from .voice_profile import VoiceProfile
 
 
 class AbortException(Exception):
@@ -71,15 +72,13 @@ class IncrementalProcessor:
         input_file: Path,
         output_dir: Path,
         backend: TTSBackend,
+        voice: VoiceProfile | None = None,
         preset: str = "calm_longform",
         chapter_strategy: str = "auto",
         chapter_min_confidence: float = 0.5,
         normalize: bool = False,
         target_lufs: float = -16.0,
-        voice_model: Path | None = None,
-        speaker_wav: Path | None = None,
         skip_failed: bool = False,
-        backend_params: dict | None = None,
     ):
         self.input_file = input_file
         self.output_dir = output_dir
@@ -91,10 +90,12 @@ class IncrementalProcessor:
         self.normalize = normalize
         self.target_lufs = target_lufs
         self.skip_failed = skip_failed
-        self.backend_params = backend_params or {}
 
-        self.voice_model = voice_model
-        self.speaker_wav = speaker_wav
+        self.voice = voice if voice is not None else VoiceProfile()
+        # Backward-compat shims for code that reads these directly.
+        self.speaker_wav = self.voice.reference_wav
+        self.voice_model: Path | None = None
+        self.backend_params = self.voice.to_dict()
 
         self.project = BookProject(output_dir)
         self.config = PresetConfig.load(preset)
@@ -298,6 +299,7 @@ class IncrementalProcessor:
                 # New: preserve voice reference for later lookup
                 "speaker_wav": str(self.speaker_wav) if self.speaker_wav else None,
                 "voice_model": str(self.voice_model) if self.voice_model else None,
+                "voice": self.voice.to_dict(),
             }
         )
         if self.progress_file.exists():
@@ -397,12 +399,20 @@ class IncrementalProcessor:
             data = json.load(f)
 
         self.backend_name = data.get("backend_name", self.backend_name)
-        if data.get("voice_model"):
-            self.voice_model = Path(data["voice_model"])
-        if data.get("speaker_wav"):
-            self.speaker_wav = Path(data["speaker_wav"])
-        if data.get("backend_params"):
-            self.backend_params = data["backend_params"]
+
+        # Reconstruct the VoiceProfile from the new 'voice' key, falling back
+        # to legacy keys for older progress files.
+        if data.get("voice"):
+            self.voice = VoiceProfile.from_dict(data["voice"])
+        else:
+            legacy = dict(data.get("backend_params") or {})
+            legacy["backend_type"] = data.get("backend_name") or "xtts"
+            if data.get("speaker_wav"):
+                legacy["speaker_wav"] = data["speaker_wav"]
+            self.voice = VoiceProfile.from_dict(legacy)
+        self.speaker_wav = self.voice.reference_wav
+        self.voice_model = Path(data["voice_model"]) if data.get("voice_model") else None
+        self.backend_params = self.voice.to_dict()
 
         if self.book_text is None:
             self.prepare_text()
@@ -491,6 +501,8 @@ class IncrementalProcessor:
             # future enhancement. For now, chunks are synthesised in isolation.
             context_chunk = chunk
 
+            from bookforge.tts.exceptions import CudaDeviceAssertError
+
             for attempt in range(1, max_retries + 1):
                 try:
                     self.backend.synthesize_chunk(context_chunk, self.config, out_wav)
@@ -503,6 +515,13 @@ class IncrementalProcessor:
                     self._save_progress()
                     self.logger.debug(f"Chunk {chunk.id} done")
                     break
+                except CudaDeviceAssertError as e:
+                    cp.error_message = str(e)
+                    self.logger.error(
+                        f"Chapter {chapter_idx + 1} chunk {chunk.id} hit a fatal "
+                        f"CUDA error: {e}"
+                    )
+                    raise  # Abort the whole chapter immediately
                 except Exception as e:
                     self.logger.warning(
                         f"Chunk {chunk.id} attempt {attempt}/{max_retries} failed: {e}"
@@ -595,6 +614,7 @@ class IncrementalProcessor:
             "target_lufs": self.target_lufs,
             "skip_failed": self.skip_failed,
             "backend_params": self.backend_params,
+            "voice": self.voice.to_dict(),
             "chapter_progress": [
                 {
                     "chapter_index": cp.chapter_index,

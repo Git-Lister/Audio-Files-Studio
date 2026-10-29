@@ -15,6 +15,7 @@ from .process.chunker import Chunk, chunk_chapter
 from .process.cleaner import clean_text
 from .project import BookProject
 from .tts.factory import get_backend
+from .voice_profile import VoiceProfile
 
 app = typer.Typer(help="Audio-Files Studio: convert texts/epubs into audiobooks using local TTS.")
 
@@ -80,9 +81,9 @@ def process(
         ),
     ),
     backend: str = typer.Option(
-        "piper",
+        "xtts",
         "--backend",
-        help="TTS backend to use: 'piper' or 'xtts'",
+        help="TTS backend to use: 'xtts'",
     ),
     speaker_wav: Optional[Path] = typer.Option(
         None,
@@ -138,11 +139,11 @@ def process(
     config = PresetConfig.load(preset)
 
     # Shared backend factory
-    tts_backend = get_backend(
+    voice = VoiceProfile(
         backend_type=backend,
-        voice_model=voice_model,
-        speaker_wav=speaker_wav,
+        reference_wav=speaker_wav,
     )
+    tts_backend = get_backend(voice)
 
     if incremental:
         from .incremental_processor import IncrementalProcessor
@@ -152,6 +153,7 @@ def process(
             input_file=input_file,
             output_dir=output_dir,
             backend=tts_backend,
+            voice=voice,
             preset=preset,
             chapter_strategy=chapter_strategy,
             chapter_min_confidence=chapter_min_confidence,
@@ -359,15 +361,15 @@ def review(
         estimated_seconds=original_chunk.estimated_seconds,
     )
 
-    backend_type = str(meta.get("backend", "piper"))
-    voice_model = Path(meta["voice_model"]) if meta.get("voice_model") else None
+    backend_type = str(meta.get("backend", "xtts"))
     speaker_wav = Path(meta["speaker_wav"]) if meta.get("speaker_wav") else None
 
     typer.echo(f"Instantiating {backend_type} backend for re-synthesis...")
     tts_backend = get_backend(
-        backend_type=backend_type,
-        voice_model=voice_model,
-        speaker_wav=speaker_wav,
+        VoiceProfile(
+            backend_type=backend_type,
+            reference_wav=speaker_wav,
+        )
     )
 
     out_wav = project.chunks_dir / f"chunk_{updated_chunk.id:05d}.wav"
