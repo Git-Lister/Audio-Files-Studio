@@ -77,6 +77,16 @@ def init_db():
             updated_at DATETIME
         )
     """)
+    # Idempotent migrations for the VoiceProfile refactor (Piper deprecated).
+    for stmt in (
+        "ALTER TABLE voices ADD COLUMN backend_type TEXT DEFAULT 'xtts'",
+        "ALTER TABLE voices ADD COLUMN accent TEXT",
+    ):
+        try:
+            c.execute(stmt)
+        except sqlite3.OperationalError:
+            # Column already exists on an existing DB; ignore.
+            pass
     c.execute("CREATE INDEX IF NOT EXISTS idx_voices_name ON voices(name)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_voices_tags ON voices(tags)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
@@ -108,17 +118,20 @@ def add_voice(data: Dict[str, Any]) -> str:
         """
         INSERT INTO voices (
             id, name, description, reference_wav_path,
+            backend_type, accent,
             temperature, length_penalty, repetition_penalty,
             top_p, top_k, language, preset_name,
             pitch, rate, normalize, tags, preview_text,
             is_system, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             voice_id,
             data.get("name", "Unnamed Voice"),
             data.get("description", ""),
             data.get("reference_wav_path"),
+            data.get("backend_type", "xtts"),
+            data.get("accent"),
             data.get("temperature", 0.667),
             data.get("length_penalty", 1.0),
             data.get("repetition_penalty", 5.0),
@@ -179,6 +192,8 @@ def update_voice(voice_id: str, data: Dict[str, Any]) -> None:
         "name",
         "description",
         "reference_wav_path",
+        "backend_type",
+        "accent",
         "temperature",
         "length_penalty",
         "repetition_penalty",

@@ -251,6 +251,21 @@ def _sanitise_filename(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9 _.-]", "_", name)
 
 
+def _audio_url(path: Path) -> str:
+    """Map a filesystem path under temp/ to the /temp static URL.
+
+    main.py serves the `temp/` directory at the `/temp` URL prefix via
+    `app.add_static_files("/temp", Path("temp"))`. Working copies live
+    under temp/studio/sessions/..., so we convert an absolute path back
+    to a URL the browser can fetch.
+    """
+    try:
+        rel = path.resolve().relative_to(Path("temp").resolve())
+    except ValueError:
+        rel = path
+    return "/temp/" + rel.as_posix()
+
+
 def view():
     container = ui.column().classes("w-full")
 
@@ -376,19 +391,16 @@ def view():
 
     def do_play() -> None:
         """Start playback of the working file."""
+        print("[AudioStudio] Play button clicked")
         if not state["working_path"]:
             safe_notify("No file loaded", type="warning")
             return
         ui.run_javascript("""
             (function() {
                 const a = document.getElementById('studio_audio');
-                if (!a) {
-                    console.warn('Audio Studio: no <audio> element found');
-                    return;
-                }
-                a.play().catch(function(err) {
-                    console.error('Audio Studio: play() rejected:', err);
-                });
+                if (!a) { console.warn('AudioStudio: no #studio_audio element found'); return; }
+                console.log('AudioStudio: attempting play on', a.src);
+                a.play().catch(function(err) { console.error('AudioStudio: play() rejected:', err); });
             })();
         """)
 
@@ -868,10 +880,8 @@ def view():
                 </div>
                 """)
 
-            # Hidden audio player for playback (positioned off-screen but kept in DOM for play())
-            audio_player = ui.audio("").props('id="studio_audio"').classes("w-full").style(
-                "position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0;"
-            )
+            # Hidden audio player for playback (kept in DOM for play())
+            audio_player = ui.audio("").props('id="studio_audio"').classes("hidden")
 
             # Playback controls
             with ui.row().classes("items-center gap-2 q-mt-md"):

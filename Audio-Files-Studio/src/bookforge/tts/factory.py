@@ -1,32 +1,23 @@
-"""TTS backend factory with parameter forwarding."""
+"""TTS backend factory driven by a VoiceProfile."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
+from ..voice_profile import VoiceProfile
+from .backend import TTSBackend
 
-def get_backend(
-    backend_type: str,
-    voice_model: Path | None = None,
-    speaker_wav: Path | None = None,
-    **kwargs: Any,
-):
-    """Instantiate the correct TTS backend, passing additional kwargs."""
-    backend_type = backend_type.lower().strip()
 
-    if backend_type == "piper":
-        if voice_model is None:
-            raise ValueError("--voice-model is required for Piper backend.")
-        from .piper import PiperBackend
-
-        return PiperBackend(str(voice_model))
+def get_backend(voice: VoiceProfile, **overrides: Any) -> TTSBackend:
+    """Instantiate the correct TTS backend from a VoiceProfile."""
+    backend_type = voice.backend_type.lower().strip()
 
     if backend_type == "xtts":
-        if speaker_wav is None:
-            raise ValueError("speaker_wav is required for XTTS backend.")
-        if not speaker_wav.exists():
-            raise FileNotFoundError(f"Speaker WAV not found: {speaker_wav}")
+        if voice.reference_wav is None:
+            raise ValueError("reference_wav is required for XTTS backend.")
+        if not voice.reference_wav.exists():
+            raise FileNotFoundError(f"Speaker WAV not found: {voice.reference_wav}")
+
         try:
             from .xtts import XTTSBackend
         except ModuleNotFoundError as e:
@@ -34,27 +25,28 @@ def get_backend(
                 "XTTS dependencies are not installed. Please install torch and Coqui TTS."
             ) from e
 
-        # Extract only the parameters that XTTSBackend accepts
-        xtts_params = {
-            k: v
-            for k, v in kwargs.items()
-            if k
-            in [
-                "model_name",
-                "gpu",
-                "language",
-                "temperature",
-                "length_penalty",
-                "repetition_penalty",
-                "top_p",
-                "top_k",
-                "pitch",
-                "rate",
-                "num_beams",
-                "retries",
-                "retry_delay",
-            ]
+        params = {
+            "speaker_wav": voice.reference_wav,
+            "language": voice.language,
+            "temperature": voice.temperature,
+            "length_penalty": voice.length_penalty,
+            "repetition_penalty": voice.repetition_penalty,
+            "top_p": voice.top_p,
+            "top_k": voice.top_k,
+            "pitch": voice.pitch,
+            "rate": voice.rate,
+            "num_beams": voice.num_beams,
         }
-        return XTTSBackend(speaker_wav=speaker_wav, **xtts_params)
+        params.update(overrides)
+        return XTTSBackend(**params)
+
+    if backend_type == "f5":
+        from .f5 import F5Backend
+
+        return F5Backend(
+            speaker_wav=voice.reference_wav,
+            language=voice.language,
+            speed=voice.rate,
+        )
 
     raise ValueError(f"Unknown backend: {backend_type}")

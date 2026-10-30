@@ -244,6 +244,7 @@ async def main_page():
     async def resume_project(project_name: str):
         from bookforge.incremental_processor import IncrementalProcessor
         from bookforge.tts.factory import get_backend
+        from bookforge.voice_profile import VoiceProfile
 
         progress_file = Path("out") / project_name / "processing_progress.json"
         if not progress_file.exists():
@@ -260,24 +261,23 @@ async def main_page():
         if backend_type == "unknown":
             if data.get("speaker_wav"):
                 backend_type = "xtts"
-            elif data.get("voice_model"):
-                backend_type = "piper"
             else:
                 safe_notify("Cannot detect backend.", type="warning")
                 return
 
-        voice_model = Path(data["voice_model"]) if data.get("voice_model") else None
-        speaker_wav = Path(data["speaker_wav"]) if data.get("speaker_wav") else None
-        backend_params = data.get("backend_params", {})
+        # Reconstruct the VoiceProfile from the saved 'voice' key, falling
+        # back to legacy keys for older progress files.
+        if data.get("voice"):
+            voice = VoiceProfile.from_dict(data["voice"])
+        else:
+            legacy = dict(data.get("backend_params") or {})
+            legacy["backend_type"] = backend_type
+            if data.get("speaker_wav"):
+                legacy["speaker_wav"] = data["speaker_wav"]
+            voice = VoiceProfile.from_dict(legacy)
 
         try:
-            tts_backend = await asyncio.to_thread(
-                get_backend,
-                backend_type=backend_type,
-                voice_model=voice_model,
-                speaker_wav=speaker_wav,
-                **backend_params,
-            )
+            tts_backend = await asyncio.to_thread(get_backend, voice)
         except Exception as e:
             safe_notify(f"Failed to recreate backend: {e}", type="negative")
             return
@@ -286,15 +286,13 @@ async def main_page():
             input_file=Path(data["input_file"]),
             output_dir=Path("out") / project_name,
             backend=tts_backend,
+            voice=voice,
             preset=data.get("preset", "calm_longform"),
             chapter_strategy=data.get("chapter_strategy", "auto"),
             chapter_min_confidence=float(data.get("chapter_min_confidence", 0.5)),
             normalize=data.get("normalize", False),
             target_lufs=float(data.get("target_lufs", -16.0)),
-            voice_model=voice_model,
-            speaker_wav=speaker_wav,
             skip_failed=data.get("skip_failed", False),
-            backend_params=backend_params,
         )
         proc.backend_name = backend_type
         await asyncio.to_thread(proc.prepare_text)

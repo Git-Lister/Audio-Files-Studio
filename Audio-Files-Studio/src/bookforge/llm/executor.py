@@ -115,6 +115,7 @@ class Executor:
         self,
         text: str,
         user_instructions: str | None = None,
+        document_type: str | None = None,
         progress_callback: callable | None = None,
     ) -> ExecutorResult:
         """Ask the model to classify each line of text, in batches.
@@ -150,7 +151,7 @@ class Executor:
             progress_callback(0, total_lines)
 
         # Compose the system prompt once, outside the batch loop.
-        system_prompt = build_system_prompt(user_instructions)
+        system_prompt = build_system_prompt(user_instructions, document_type)
 
         for start in range(0, total_lines, self._batch_size):
             end = min(start + self._batch_size, total_lines)
