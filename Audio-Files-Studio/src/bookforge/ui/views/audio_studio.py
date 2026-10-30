@@ -29,7 +29,15 @@ def _audio_url(path: Path) -> str:
         # Path is not under CWD; return as-is and hope NiceGUI can serve it.
         return path.as_posix()
 
-from bookforge.audio.editor import delete_range, new_working_copy, snapshot, trim
+from bookforge.audio.editor import (
+    apply_fade,
+    delete_range,
+    new_working_copy,
+    normalize_loudness,
+    snapshot,
+    trim,
+    trim_silence,
+)
 from bookforge.audio.peaks import TEMP_STUDIO_DIR, extract_peaks, get_metadata, get_duration
 from bookforge.ui.components import safe_notify
 
@@ -125,7 +133,7 @@ ui.add_body_html("""
         }
 
         // Playhead
-        const audio = document.querySelector('audio');
+        const audio = document.getElementById('studio_audio');
         if (audio && studioDuration > 0) {
             const px = (audio.currentTime / studioDuration) * w;
             ctx.strokeStyle = playheadColor;
@@ -138,7 +146,7 @@ ui.add_body_html("""
     };
 
     window.updateStudioPlayhead = function() {
-        const audio = document.querySelector('audio');
+        const audio = document.getElementById('studio_audio');
         if (audio) {
             const t = audio.currentTime;
             const total = studioDuration;
@@ -213,7 +221,7 @@ ui.add_body_html("""
                 // Single click -> seek
                 if (studioDuration > 0) {
                     const t = (x / w) * studioDuration;
-                    const audio = document.querySelector('audio');
+                    const audio = document.getElementById('studio_audio');
                     if (audio) audio.currentTime = t;
                 }
                 studioSelectionStart = 0;
@@ -373,7 +381,7 @@ def view():
             return
         ui.run_javascript("""
             (function() {
-                const a = document.querySelector('audio');
+                const a = document.getElementById('studio_audio');
                 if (!a) {
                     console.warn('Audio Studio: no <audio> element found');
                     return;
@@ -388,7 +396,7 @@ def view():
         """Stop playback and return to the start."""
         ui.run_javascript("""
             (function() {
-                const a = document.querySelector('audio');
+                const a = document.getElementById('studio_audio');
                 if (!a) return;
                 a.pause();
                 a.currentTime = 0;
@@ -617,6 +625,39 @@ def view():
         print(f"[AudioStudio.view] do_delete complete: working={state.get('working_path')}")
         print(f"[AudioStudio.view]   exists: {Path(state['working_path']).exists() if state.get('working_path') else 'no path'}")
 
+    def do_polish_op(op_name: str, op_func):
+        """Generic wrapper for polish operations to handle snapshots and state."""
+        if not state["working_path"]:
+            safe_notify("No file loaded", type="warning")
+            return
+
+        session_dir = Path(state["session_dir"])
+        snap = snapshot(state["working_path"], session_dir)
+        state["undo_stack"].append(str(snap))
+        state["redo_stack"].clear()
+
+        try:
+            op_func(state["working_path"])
+        except Exception as e:
+            safe_notify(f"{op_name} failed: {e}", type="negative")
+            # Restore snapshot
+            if state["undo_stack"]:
+                last = Path(state["undo_stack"].pop())
+                if last.exists(): last.replace(state["working_path"])
+            return
+
+        # Refresh UI
+        state["peaks"] = extract_peaks(state["working_path"])
+        state["duration"] = get_duration(state["working_path"])
+        set_audio_source(state["working_path"])
+        push_peaks_to_js()
+        update_ui_state()
+        safe_notify(f"{op_name} applied", type="positive")
+
+    def do_normalize(): do_polish_op("Normalize", normalize_loudness)
+    def do_trim_silence(): do_polish_op("Trim Silence", trim_silence)
+    def do_fade(direction: str): do_polish_op("Fade", lambda p: apply_fade(p, direction, 1.0))
+
     def do_undo() -> None:
         """Restore previous snapshot."""
         if not state["undo_stack"] or not state["working_path"]:
@@ -681,29 +722,67 @@ def view():
         update_ui_state()
         safe_notify("Redone", type="positive")
 
-    def do_export_wav() -> None:
-        """Copy the working file to audio_edits/<name>.wav."""
-        if not state["working_path"] or not state["source_path"]:
-            safe_notify("No file to export", type="warning")
-            return
+    def do_export() -> None:
+        if not state["working_path"]: return
 
-        filename = export_filename.value if export_filename else ""
-        if not filename:
-            base = Path(state["source_path"]).stem
-            filename = f"{_sanitise_filename(base)}_edited"
-
-        if not filename.endswith(".wav"):
-            filename += ".wav"
+        fmt = export_format.value
+        filename = export_filename.value or "exported_audio"
+        if not filename.endswith(f".{fmt}"):
+            # Strip old extension if present
+            filename = filename.rsplit('.', 1)[0] + f".{fmt}"
 
         AUDIO_EDITS_DIR.mkdir(parents=True, exist_ok=True)
         target = AUDIO_EDITS_DIR / filename
 
-        try:
+        if fmt == "wav":
             import shutil
             shutil.copy2(state["working_path"], target)
-            safe_notify(f"Exported to audio_edits/{filename}", type="positive")
-        except Exception as ex:
-            safe_notify(f"Export failed: {ex}", type="negative")
+        else:
+            cmd = ["ffmpeg", "-y", "-i", str(state["working_path"]), str(target)]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True)
+            except Exception as ex:
+                safe_notify(f"Export failed: {ex}", type="negative")
+                return
+
+        safe_notify(f"Exported to {target.name}", type="positive")
+
+    async def do_save_to_voicebox() -> None:
+        """Save the current working file as a new voice in the Voice Box."""
+        if not state["working_path"]:
+            return
+
+        from bookforge.ui import voice_library as lib
+
+        name_input = ui.input("Voice Name", value="New Studio Voice").classes("w-full")
+
+        with ui.dialog() as dialog, ui.card():
+            ui.label("Save as Reference Voice").classes("text-h6")
+            ui.label("This will create a new voice in the Voice Box using the current audio file as the reference sample.").classes("text-caption")
+            name_input
+            with ui.row().classes("justify-end w-full q-mt-md"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                async def confirm():
+                    name = name_input.value.strip() or "Studio Voice"
+                    try:
+                        # Create DB entry
+                        voice_id = lib.add_voice({
+                            "name": name,
+                            "description": "Imported from Audio Studio",
+                        })
+                        # Copy audio to permanent reference path
+                        dest = lib.persist_reference(voice_id, state["working_path"])
+                        lib.update_voice(voice_id, {"reference_wav_path": str(dest)})
+
+                        safe_notify(f"Saved '{name}' to Voice Box", type="positive")
+                        dialog.close()
+                    except Exception as ex:
+                        safe_notify(f"Save failed: {ex}", type="negative")
+
+                ui.button("Save", on_click=confirm).props("color=positive")
+
+        dialog.open()
 
     def do_clear() -> None:
         """Clear the loaded file and reset state."""
@@ -790,7 +869,7 @@ def view():
                 """)
 
             # Hidden audio player for playback (positioned off-screen but kept in DOM for play())
-            audio_player = ui.audio("").classes("w-full").style(
+            audio_player = ui.audio("").props('id="studio_audio"').classes("w-full").style(
                 "position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0;"
             )
 
@@ -818,12 +897,23 @@ def view():
             with ui.row().classes("q-my-sm"):
                 undo_btn = ui.button("Undo", on_click=do_undo).props("flat color=primary")
                 redo_btn = ui.button("Redo", on_click=do_redo).props("flat color=primary")
+            with ui.row().classes("q-my-sm gap-2"):
+                ui.button("Normalize Volume", icon="volume_up", on_click=do_normalize).props("flat color=secondary size=sm")
+                ui.button("Trim Silence", icon="content_cut", on_click=do_trim_silence).props("flat color=secondary size=sm")
+                ui.button("Fade In", icon="input", on_click=lambda: do_fade("in")).props("flat color=secondary size=sm")
+                ui.button("Fade Out", icon="output", on_click=lambda: do_fade("out")).props("flat color=secondary size=sm")
 
         # ---- Export card ----
         with ui.card().classes("w-full q-mb-md"):
             ui.label("Export").classes("text-h6")
+            export_format = ui.select(
+                options=["wav", "mp3", "flac"],
+                value="wav",
+                label="Format",
+            ).classes("w-full q-mb-sm")
             export_filename = ui.input(label="Filename", value="").classes("w-full q-mb-sm")
-            export_btn = ui.button("Save as WAV", on_click=do_export_wav).props("color=positive")
+            export_btn = ui.button("Export", on_click=do_export).props("color=positive")
+            ui.button("Save to Voice Box", on_click=do_save_to_voicebox).props("color=primary")
 
         # Initial UI state
         update_ui_state()

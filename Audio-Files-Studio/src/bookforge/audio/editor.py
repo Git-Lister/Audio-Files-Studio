@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 
 from .concat import concat_wavs
+from .peaks import get_duration
 
 TEMP_STUDIO_DIR = Path("temp/studio")
 SESSIONS_DIR = TEMP_STUDIO_DIR / "sessions"
@@ -296,3 +297,59 @@ def split_at(working: Path, position: float, output_dir: Path) -> tuple[Path, Pa
         ]
     )
     return left_path, right_path
+
+
+def normalize_loudness(working: Path) -> None:
+    """Normalize audio to EBU R128 (-16 LUFS)."""
+    tmp = working.parent / f"{working.stem}.norm.wav"
+    cmd = [
+        "ffmpeg", "-y", "-i", str(working),
+        "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+        "-c:a", "pcm_s16le", str(tmp)
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode(errors="ignore") if e.stderr else "(no stderr)"
+        raise RuntimeError(f"ffmpeg normalize failed: {stderr[-500:]}")
+    tmp.rename(working)
+
+
+def trim_silence(working: Path) -> None:
+    """Trim leading/trailing silence and remove silences > 1s in the middle."""
+    tmp = working.parent / f"{working.stem}.silence.wav"
+    # Threshold -40dB, remove silences longer than 1.0s, leave 0.3s of padding
+    af = "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-40dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-40dB,areverse"
+    cmd = [
+        "ffmpeg", "-y", "-i", str(working),
+        "-af", af,
+        "-c:a", "pcm_s16le", str(tmp)
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode(errors="ignore") if e.stderr else "(no stderr)"
+        raise RuntimeError(f"ffmpeg trim_silence failed: {stderr[-500:]}")
+    tmp.rename(working)
+
+
+def apply_fade(working: Path, direction: str, duration: float = 1.0) -> None:
+    """Apply a fade in or fade out."""
+    tmp = working.parent / f"{working.stem}.fade.wav"
+    af = f"afade=t={direction}:st=0:d={duration}"
+    if direction == "out":
+        # For fade out, we need to start at (duration - fade_duration)
+        total_dur = get_duration(working)
+        start = max(0, total_dur - duration)
+        af = f"afade=t=out:st={start}:d={duration}"
+
+    cmd = [
+        "ffmpeg", "-y", "-i", str(working),
+        "-af", af, "-c:a", "pcm_s16le", str(tmp)
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode(errors="ignore") if e.stderr else "(no stderr)"
+        raise RuntimeError(f"ffmpeg fade failed: {stderr[-500:]}")
+    tmp.rename(working)
