@@ -3,12 +3,42 @@
 from __future__ import annotations
 
 import logging
+import os
+import ssl
 from pathlib import Path
+
+import requests
+from urllib3.exceptions import InsecureRequestWarning
 
 from ..config import PresetConfig
 from ..process.chunker import Chunk
 from .backend import TTSBackend
 from .exceptions import CudaDeviceAssertError
+
+# =====================================================================
+# BULLETPROOF SSL BYPASS (For Kaspersky / Corporate Firewalls)
+# This forces Python, HuggingFace, and Whisper to ignore SSL errors.
+# =====================================================================
+# 1. Bypass SSL for standard urllib
+if hasattr(ssl, "_create_unverified_context"):
+    ssl._create_default_https_context = ssl._create_unverified_context
+
+# 2. Bypass SSL for HuggingFace / Transformers env vars
+os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
+os.environ["PYTHONHTTPSVERIFY"] = "0"
+
+# 3. Monkeypatch requests to globally disable SSL verification
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+_original_session_init = requests.Session.__init__
+
+
+def _patched_session_init(self, *args, **kwargs):
+    _original_session_init(self, *args, **kwargs)
+    self.verify = False
+
+
+requests.Session.__init__ = _patched_session_init
+# =====================================================================
 
 logger = logging.getLogger("bookforge.tts.f5")
 
@@ -32,10 +62,12 @@ class F5Backend(TTSBackend):
             return
         try:
             from f5_tts.api import F5TTS
-        except ImportError as e:
-            raise ImportError("f5-tts is not installed. Please rebuild the container.") from e
+        except Exception as e:
+            # Do not mask the real error (e.g. missing pyarrow, bad numpy version)
+            raise RuntimeError(f"Failed to load F5-TTS due to a dependency error: {e}") from e
 
         logger.info("Loading F5-TTS model...")
+        logger.warning("Loading F5-TTS model. First run may download ~1.5GB from HuggingFace.")
         # 'F5TTS_v1_Base' is the standard pre-trained model.
         self._model = F5TTS(model="F5TTS_v1_Base", device="cuda")
         logger.info("F5-TTS loaded.")
@@ -53,7 +85,7 @@ class F5Backend(TTSBackend):
             logger.debug(f"F5 Synthesising: {text[:50]}...")
             self._model.infer(
                 ref_file=self._speaker_wav,
-                ref_text="",  # F5 can auto-transcribe, or we can provide it
+                ref_text="",  # F5 will auto-transcribe using Whisper
                 gen_text=text,
                 file_wave=str(out_path),
                 speed=self._speed,

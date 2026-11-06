@@ -49,4 +49,13 @@ def get_backend(voice: VoiceProfile, **overrides: Any) -> TTSBackend:
             speed=voice.rate,
         )
 
+    if backend_type == "styletts2":
+        from .styletts2 import StyleTTS2Backend
+
+        return StyleTTS2Backend(
+            speaker_wav=voice.reference_wav,
+            language=voice.language,
+            speed=voice.rate,
+        )
+
     raise ValueError(f"Unknown backend: {backend_type}")

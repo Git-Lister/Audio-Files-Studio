@@ -192,6 +192,9 @@ class PipelineState:
             self.chapter_progress = ui.linear_progress(value=pd["chapter_progress"]).props(
                 "size=15px color=secondary"
             )
+            proc = get_processor()
+            backend_name = getattr(proc, "voice", None) and getattr(proc.voice, "backend_type", "xtts") or "xtts"
+            ui.label(f"Engine: {backend_name.upper()}").classes("text-caption text-grey q-mb-sm")
 
             self.chapter_list = ui.column().classes("w-full q-mt-md")
             self.rebuild_chapter_list()
@@ -507,6 +510,11 @@ class PipelineState:
                     end_ms = int(times[i + 1] * 1000)
                 else:
                     end_ms = int(total_duration * 1000)
+
+                # Clamp the end time to prevent FFmpeg crashing if it exceeds the WAV duration
+                if i + 1 == len(chapter_titles):
+                    end_ms = min(end_ms, int(total_duration * 1000))
+
                 f.write("[CHAPTER]\n")
                 f.write("TIMEBASE=1/1000\n")
                 f.write(f"START={start_ms}\n")
@@ -535,6 +543,7 @@ class PipelineState:
                     "aac",
                     "-b:a",
                     "128k",
+                    "-shortest",  # <--- Add this
                     str(m4b_path),
                     "-y",
                 ],
@@ -545,7 +554,7 @@ class PipelineState:
         except subprocess.CalledProcessError as e:
             stderr_text = e.stderr.decode(errors="ignore") if e.stderr else "(no stderr)"
             safe_notify(
-                f"M4B export failed (exit {e.returncode}): {stderr_text[:300]}",
+                f"M4B export failed (exit {e.returncode}): {stderr_text[-500:]}",
                 type="negative",
             )
         except Exception as e:

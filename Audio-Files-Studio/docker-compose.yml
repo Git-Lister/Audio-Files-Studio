@@ -1,7 +1,9 @@
 services:
   studio:
     image: audio-files-studio
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.phase3
     ports:
       - "8501:8501"
     volumes:
@@ -11,6 +13,8 @@ services:
       - bookforge-hf-cache:/root/.cache/huggingface
     environment:
       - COQUI_TTS_AGREED=1
+      - HF_HUB_DISABLE_SSL_VERIFY=1
+      - PYTHONHTTPSVERIFY=0
     deploy:
       resources:
         reservations:

@@ -1,0 +1,17 @@
+FROM audio-files-studio:phase2-base
+
+# 1. Install styletts2 (downgrades transformers/accelerate)
+# 2. Restore transformers/accelerate for F5 compatibility
+# 3. Install f5-tts
+# 4. Force pyarrow/datasets/numpy back to NumPy 1.x-compatible versions
+#    (pyarrow>=16 requires NumPy>=2.0, which would break XTTS/PyTorch)
+RUN pip install styletts2 \
+    && pip install "transformers==4.42.4" "accelerate>=0.33.0" \
+    && pip install "f5-tts>=0.1.0" \
+    && pip install "pyarrow<16.0.0" "datasets<2.19.0" "numpy==1.26.4" \
+    && pip install phonemizer \
+    && pip install git+https://github.com/resemble-ai/Resemblyzer.git \
+    && pip install git+https://github.com/myshell-ai/OpenVoice.git --no-deps
+
+EXPOSE 8501
+CMD ["python", "src/bookforge/ui/main.py"]

@@ -50,7 +50,13 @@ def view(switch_to_vocalizer_callback=None):
                     for voice in voices:
                         with ui.card().classes("col-12 col-sm-6 col-md-4"):
                             with ui.row().classes("items-center justify-between w-full"):
-                                ui.label(voice["name"]).classes("text-h6")
+                                with ui.row().classes("items-center gap-2"):
+                                    ui.label(voice["name"]).classes("text-h6")
+                                    backend = voice.get("backend_type", "xtts")
+                                    if backend == "f5":
+                                        ui.label("F5").classes("text-caption bg-green-2 text-green-8 q-px-sm rounded-borders")
+                                    else:
+                                        ui.label("XTTS").classes("text-caption bg-purple-2 text-purple-8 q-px-sm rounded-borders")
                                 if voice["is_system"]:
                                     ui.label("built‑in").classes("text-caption text-grey")
                             if voice.get("tags"):

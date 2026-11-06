@@ -369,6 +369,7 @@ def view(switch_to_gallery_callback=None):
     preview_spinner = None
     audio_player = None
     engine_select = None
+    engine_status = None
 
     # ---- Helper functions ----
     def set_preview_text(text):
@@ -383,7 +384,7 @@ def view(switch_to_gallery_callback=None):
         if engine_select is not None:
             try:
                 engine_select.value = backend
-                state["engine"] = backend
+                _update_engine_ui(backend) # <--- Crucial: forces the sliders to disable
             except RuntimeError:
                 pass
 
@@ -447,11 +448,20 @@ def view(switch_to_gallery_callback=None):
         )
 
     def on_engine_change(e):
-        state["engine"] = e.value
-        is_xtts = e.value == "xtts"
-        for slider in (temp_slider, length_slider, repeat_slider):
-            if slider is not None:
-                slider.enabled = is_xtts
+        _update_engine_ui(e.value)
+
+    def _update_engine_ui(val: str):
+        state["engine"] = val
+        if val in ("f5", "styletts2"):
+            engine_status.set_text(f"{val.upper()}: Fast, non-autoregressive generation. Ignores Advanced Sampling sliders.")
+            engine_status.classes(remove="text-grey", add="text-positive")
+            for s in [temp_slider, length_slider, repeat_slider, top_p_slider, top_k_slider]:
+                if s is not None: s.disable()
+        else:
+            engine_status.set_text("XTTS v2: Zero-shot cloning. Higher quality, slower generation.")
+            engine_status.classes(remove="text-positive", add="text-grey")
+            for s in [temp_slider, length_slider, repeat_slider, top_p_slider, top_k_slider]:
+                if s is not None: s.enable()
 
     def apply_slider_preset(preset_key: str):
         preset = SLIDER_PRESETS.get(preset_key)
@@ -745,10 +755,16 @@ def view(switch_to_gallery_callback=None):
 
                 ui.label("TTS Engine").classes("text-subtitle2")
                 engine_select = ui.select(
-                    options={"xtts": "XTTS v2 (Artistry)", "f5": "F5-TTS (Speed & Stability)"},
+                    options={
+                        "xtts": "XTTS v2 (Legacy)",
+                        "f5": "F5-TTS (Speed & Stability)",
+                        "styletts2": "StyleTTS2 (Artistry & Prosody)",
+                    },
                     value="xtts",
-                    on_change=on_engine_change,
-                ).classes("w-full q-mb-md")
+                    on_change=lambda e: _update_engine_ui(e.value),
+                ).classes("w-full q-mb-sm")
+
+                engine_status = ui.label("XTTS v2: Zero-shot cloning. Higher quality, slower generation.").classes("text-caption text-grey q-mb-md")
 
                 ui.label("Voice Character (Radar)").classes("text-h6 text-bold")
                 ui.markdown("_These sliders control the overall personality of the voice._")

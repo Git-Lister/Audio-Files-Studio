@@ -78,10 +78,13 @@ def view(on_switch_to_pipeline=None):
 
         voice = lib.get_voice(voice_id)
         if voice:
+            backend = voice.get("backend_type", "xtts")
+            state["backend"] = backend # Ensure this is set
+            badge = "[F5]" if backend == "f5" else "[XTTS]"
             ref_path = Path(lib.get_voice_dir(voice_id)) / "reference.wav"
             if ref_path.exists():
                 state["speaker_wav"] = ref_path
-                voice_status.set_text(f"Using voice: {voice['name']}")
+                voice_status.set_text(f"Using voice: {badge} {voice['name']}")
             else:
                 state["speaker_wav"] = None
                 voice_status.set_text(f"⚠️ {voice['name']} is missing its reference WAV.")

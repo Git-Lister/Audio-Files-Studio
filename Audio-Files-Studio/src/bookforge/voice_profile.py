@@ -8,7 +8,7 @@ from pathlib import Path
 
 @dataclass
 class VoiceProfile:
-    backend_type: str = "xtts"          # "xtts" | "f5" (styletts2 future)
+    backend_type: str = "xtts"          # "xtts" | "f5" | "styletts2"
     reference_wav: Path | None = None   # For XTTS / zero-shot cloning
     accent: str | None = None           # e.g. "Irish"
 

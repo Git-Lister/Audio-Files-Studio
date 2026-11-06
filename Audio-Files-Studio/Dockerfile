@@ -18,6 +18,16 @@ RUN apt-get update && apt-get install -y \
     libsndfile1 \
     build-essential \
     cmake \
+    espeak-ng \
+    libespeak-ng1 \
+    pkg-config \
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libavfilter-dev \
+    libswscale-dev \
+    libswresample-dev \
     && add-apt-repository ppa:deadsnakes/ppa -y \
     && apt-get update && apt-get install -y \
     python3.11 \
@@ -84,4 +94,17 @@ RUN mkdir -p /models
 
 EXPOSE 8501
 
+# Phase 3: StyleTTS2, OpenVoice, and related dependencies.
+# NOTE: We install faster-whisper>=1.1.0 and av>=12 explicitly BEFORE OpenVoice,
+# then use --no-deps for OpenVoice so pip does not downgrade faster-whisper to
+# 0.9.0 (which would force av==10.0.0 and fail with no Python 3.11 wheel).
+# av>=12 has pre-built manylinux wheels for Python 3.11, avoiding any source build.
+RUN pip install "av>=12" \
+    && pip install "faster-whisper>=1.1.0" \
+    && pip install phonemizer \
+    && pip install git+https://github.com/resemble-ai/Resemblyzer.git \
+    && pip install git+https://github.com/myshell-ai/OpenVoice.git --no-deps \
+    && pip install git+https://github.com/yl4579/StyleTTS2.git
+
+# Ensure CMD is the very last instruction (Docker best practice)
 CMD ["python", "src/bookforge/ui/main.py"]
